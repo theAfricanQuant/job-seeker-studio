@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Field Notes — Local application workspace</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Field Notes</a>
+      <p class="privacy">Local workspace · Typst PDFs · never auto-applies</p>
+    </header>
+
+    <section class="hero">
+      <div>
+        <p class="eyebrow">A careful route to a better application</p>
+        <h1>Start from the candidate.<br><em>Then find the right role.</em></h1>
+        <p class="lede">Upload a CV, correct the extracted facts, choose a suitable role, and create a truthful Typst-based application package.</p>
+      </div>
+      <aside class="workflow" aria-label="Workflow">
+        <span>01</span> Confirm evidence
+        <span>02</span> Compare roles
+        <span>03</span> Review the documents
+      </aside>
+    </section>
+
+    <section class="status-line" id="status">Checking local document tools…</section>
+
+    <section class="workspace">
+      <section class="panel profile-panel" aria-labelledby="profile-title">
+        <div class="panel-head"><div><p class="eyebrow">Candidate record</p><h2 id="profile-title">Make the profile accurate.</h2></div><span class="local-chip">Stored locally</span></div>
+        <label class="dropzone" for="cv-file"><input id="cv-file" type="file" accept=".pdf,.doc,.docx,.txt,.md" hidden><strong>Choose a CV to read</strong><small>PDF, DOCX, TXT, or Markdown · max 8 MB</small></label>
+        <p id="upload-note" class="quiet">Nothing has been uploaded yet.</p>
+        <form id="profile-form" class="profile-form">
+          <label>Name<input name="name" autocomplete="name" placeholder="Your name"></label>
+          <label>Professional headline<input name="headline" placeholder="e.g. Quantitative analyst"></label>
+          <div class="two-col"><label>Email<input name="email" type="email" autocomplete="email"></label><label>Phone<input name="phone" autocomplete="tel"></label></div>
+          <label>Verified skills <input name="skills" placeholder="Python, time series, risk modelling"></label>
+          <label>Approved career evidence<textarea name="source_excerpt" rows="7" placeholder="Review the CV text here. Remove anything you do not want used in a document."></textarea></label>
+          <button class="secondary" type="submit">Save candidate record</button>
+        </form>
+      </section>
+
+      <section class="panel jobs-panel" aria-labelledby="jobs-title">
+        <div class="panel-head"><div><p class="eyebrow">Role shortlist</p><h2 id="jobs-title">Choose a role worth tailoring for.</h2></div><span class="sample-chip">Sample roles</span></div>
+        <p class="quiet">These are local sample listings. Add an authorized jobs provider before using real listings.</p>
+        <div id="jobs" class="job-list"><p class="quiet">Save a candidate record to score the sample roles.</p></div>
+      </section>
+
+      <section class="panel output-panel" aria-labelledby="output-title">
+        <div class="panel-head"><div><p class="eyebrow">Typst document package</p><h2 id="output-title">Generate only what you can stand behind.</h2></div><span id="selected-job" class="selected-job">No role selected</span></div>
+        <div class="document-note"><span class="file-icon">.typ</span><p>The app produces editable Typst source and compiles a PDF CV plus cover letter on this computer.</p></div>
+        <button id="generate" class="primary" disabled>Generate CV and cover letter</button>
+        <div id="documents" class="documents"><p class="quiet">Choose a role, then generate a document package.</p></div>
+      </section>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
