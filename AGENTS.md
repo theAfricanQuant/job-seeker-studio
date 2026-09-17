@@ -20,16 +20,16 @@ Field Notes is a local-first application assistant for an individual job seeker.
 
 1. Inspect the relevant brief above and the files touched by the request.
 2. Make the smallest coherent change across UI, API, and verification.
-3. Preserve the plain-Python, no-runtime-dependency setup unless a new dependency clearly earns its operational cost.
+3. Use uv for every Python command and dependency change. Preserve the plain-Python, no-runtime-dependency setup unless a new dependency clearly earns its operational cost.
 4. Run the checks below. For generator changes, run the smoke test and inspect failures rather than bypassing compilation.
 5. Update the relevant brief only when a product decision, architecture boundary, or roadmap priority changed.
 
 ## Run and verify
 
-    python3 app.py
-    python3 -m py_compile app.py
-    node --check app.js
-    python3 tests/smoke_test.py
+    uv run python app.py
+    uv run python -m py_compile app.py
+    uv run node --check app.js
+    uv run python tests/smoke_test.py
 
 The server listens only on 127.0.0.1:8765. Open that address in a browser after starting it.
 
