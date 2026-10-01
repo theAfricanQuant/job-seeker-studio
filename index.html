@@ -3,26 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Field Notes — Local application workspace</title>
+  <title>Field Notes Career Studio — CV-to-job matching pilot</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
-      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Field Notes</a>
-      <p class="privacy">Local workspace · Typst PDFs · never auto-applies</p>
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Field Notes <small>Career Studio</small></a>
+      <p class="privacy">Local pilot · truthful documents · never auto-applies</p>
     </header>
 
     <section class="hero">
       <div>
-        <p class="eyebrow">A careful route to a better application</p>
+        <p class="eyebrow">Your CV, your evidence, your next role</p>
         <h1>Start from the candidate.<br><em>Then find the right role.</em></h1>
-        <p class="lede">Upload a CV, correct the extracted facts, choose a suitable role, and create a truthful Typst-based application package.</p>
+        <p class="lede">Upload a CV, confirm the extracted facts, see matching remote roles, and create a truthful Typst-based application package for one you choose.</p>
       </div>
       <aside class="workflow" aria-label="Workflow">
-        <span>01</span> Confirm evidence
-        <span>02</span> Compare roles
-        <span>03</span> Review the documents
+        <span>01</span> Confirm your evidence
+        <span>02</span> Compare current roles
+        <span>03</span> Review before you apply
       </aside>
     </section>
 
@@ -37,25 +37,38 @@
           <label>Name<input name="name" autocomplete="name" placeholder="Your name"></label>
           <label>Professional headline<input name="headline" placeholder="e.g. Quantitative analyst"></label>
           <div class="two-col"><label>Email<input name="email" type="email" autocomplete="email"></label><label>Phone<input name="phone" autocomplete="tel"></label></div>
+          <label>Location<input name="location" autocomplete="address-level2" placeholder="e.g. Lagos, Nigeria · open to relocation"></label>
           <label>Verified skills <input name="skills" placeholder="Python, time series, risk modelling"></label>
-          <label>Approved career evidence<textarea name="source_excerpt" rows="7" placeholder="Review the CV text here. Remove anything you do not want used in a document."></textarea></label>
+          <fieldset class="template-picker"><legend>CV template</legend><p class="quiet">First inspect the same fictional full CV in every real design. Your choice changes presentation only; your approved facts stay the same.</p><input id="cv-template" type="hidden" name="cv_template" value="ats-plain"><button id="open-template-gallery" class="secondary" type="button">View 13 real template samples</button><p id="selected-template-note" class="template-choice">Selected: ATS Plain — recommended for application portals.</p></fieldset>
+          <details class="evidence-editor" open><summary>Structured evidence for the actual CV</summary><p>One record per paragraph. First line: <code>Role | Organisation | Dates | Location</code>. Then place each approved achievement on a new line beginning with <code>-</code>. The generator only reorders these exact facts.</p><label>Experience<textarea name="experience_text" rows="10" placeholder="Quantitative Analyst | Acme Capital | 2022 – Present | Lagos, Nigeria&#10;- Built Python research tools for financial time-series analysis.&#10;- Communicated risk-model findings to investment stakeholders."></textarea></label><label>Projects (optional)<textarea name="project_text" rows="6" placeholder="Project name | Context | Year | Link or location&#10;- What you built, using only a fact you can support."></textarea></label><label>Education (optional)<textarea name="education_text" rows="5" placeholder="Degree | Institution | 2018 – 2022 | City, Country&#10;- Thesis, distinction, or other verified detail."></textarea></label><label>Languages (optional)<input name="languages" placeholder="English — fluent, French — professional working proficiency"></label></details>
+          <details class="evidence-editor"><summary>Original extracted text (reference only)</summary><p>Kept locally so you can cross-check the structured record. It is not sent to job boards and it is not turned into claims automatically.</p><label>Extracted CV text<textarea name="source_excerpt" rows="7" placeholder="Review the CV text here. Remove anything you do not want stored locally."></textarea></label></details>
           <button class="secondary" type="submit">Save candidate record</button>
         </form>
+        <div class="email-gate" aria-labelledby="email-gate-title">
+          <p class="eyebrow" id="email-gate-title">Document access</p>
+          <p id="auth-note" class="quiet">Confirm your email before generating a document package.</p>
+          <div class="auth-actions"><button id="request-code" class="secondary" type="button">Get local test code</button><label>Code<input id="email-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 digits"></label><button id="verify-code" class="secondary" type="button">Confirm email</button></div>
+        </div>
       </section>
 
       <section class="panel jobs-panel" aria-labelledby="jobs-title">
-        <div class="panel-head"><div><p class="eyebrow">Role shortlist</p><h2 id="jobs-title">Choose a role worth tailoring for.</h2></div><span class="sample-chip">Sample roles</span></div>
-        <p class="quiet">These are local sample listings. Add an authorized jobs provider before using real listings.</p>
-        <div id="jobs" class="job-list"><p class="quiet">Save a candidate record to score the sample roles.</p></div>
+        <div class="panel-head"><div><p class="eyebrow">Role shortlist</p><h2 id="jobs-title">Choose a role worth tailoring for.</h2></div><span id="jobs-source" class="sample-chip">Waiting for profile</span></div>
+        <p id="jobs-note" class="quiet">Save a candidate record to search current remote roles. If the source is unavailable, the app clearly falls back to demo roles.</p>
+        <div id="jobs" class="job-list"><p class="quiet">Save a candidate record to search current remote roles.</p></div>
       </section>
 
       <section class="panel output-panel" aria-labelledby="output-title">
         <div class="panel-head"><div><p class="eyebrow">Typst document package</p><h2 id="output-title">Generate only what you can stand behind.</h2></div><span id="selected-job" class="selected-job">No role selected</span></div>
+        <a id="original-job" class="original-job" href="#" target="_blank" rel="noopener" hidden>Open original vacancy ↗</a>
         <div class="document-note"><span class="file-icon">.typ</span><p>The app produces editable Typst source and compiles a PDF CV plus cover letter on this computer.</p></div>
         <button id="generate" class="primary" disabled>Generate CV and cover letter</button>
         <div id="documents" class="documents"><p class="quiet">Choose a role, then generate a document package.</p></div>
       </section>
     </section>
+    <dialog id="template-gallery" class="template-gallery" aria-labelledby="template-gallery-title">
+      <div class="gallery-head"><div><p class="eyebrow">Typst CV Studio</p><h2 id="template-gallery-title">See the designs before choosing.</h2><p>Every card uses the same fictional, full CV. Open its PDF to inspect the complete sample, then choose the design you want for your own CV.</p></div><button id="close-template-gallery" class="secondary" type="button">Close</button></div>
+      <div id="template-cards" class="template-cards"></div>
+    </dialog>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>

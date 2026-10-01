@@ -2,3 +2,6 @@ local_data/
 __pycache__/
 tests/__pycache__/
 .venv/
+cv_templates_repo/
+cv_studio_runtime/out/
+cv_studio_runtime/__pycache__/

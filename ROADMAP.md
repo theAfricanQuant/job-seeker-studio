@@ -2,14 +2,14 @@
 
 ## Next: strengthen the local workflow
 
-1. Add profile sections for work history, education, languages, and individual accomplishments rather than relying on a free-text excerpt.
-2. Show the evidence used for each job-match signal and let the user exclude a signal.
-3. Improve Typst templates with an explicit page-length check and a rendered-page review.
+1. Add individual accomplishments, links, certifications, and an explicit per-signal include/exclude control to the reviewed candidate record.
+2. Add an explicit page-length check and rendered-page review to every generated template.
+3. Add document history, comparison, and visible deletion of uploaded CVs/documents.
 4. Add document history, compare revisions, and make deletion of uploaded CVs/documents visible in the interface.
 
 ## Add real job discovery only with an approved source
 
-Choose a provider that permits this product's intended use before implementing a connector. Capture its allowed usage, rate limits, data retention, attribution, and costs in a new provider-specific document. Avoid treating public web pages as permission to build a commercial scraper.
+The local pilot currently uses Jobicy and FreeHire with source attribution and original application links. Before each new source, capture its allowed use, rate limits, data retention, attribution, and costs in a provider-specific document. Avoid treating public web pages as permission to build a commercial scraper.
 
 The connector contract should return normalized fields:
 
@@ -19,7 +19,7 @@ Keep connectors separate from the local scoring and document pipeline. The app m
 
 ## Add AI drafting only with an explicit product decision
 
-Before a model sees candidate data:
+The intended hosted model provider is Nous Research. Before its API sees candidate data:
 
 1. Obtain clear user consent and identify the provider.
 2. Limit the payload to reviewed profile facts and the chosen job description.

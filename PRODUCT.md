@@ -9,17 +9,17 @@ Help an individual job seeker prepare a more relevant application without sacrif
 1. The user chooses a CV file.
 2. The app reads its text locally and creates a starter profile.
 3. The user reviews and edits their name, contact details, headline, skills, and career evidence.
-4. The app scores locally stored sample roles against that approved profile.
+4. The app derives a narrow search term from the approved profile and scores attributable Jobicy and FreeHire listings locally. It falls back to clearly labelled local demo roles only when live providers are unavailable.
 5. The user chooses one role.
-6. The app creates editable Typst CV and cover-letter sources, then local PDFs.
+6. The app renders the chosen Typst CV Studio design, an ATS Plain companion CV, and a cover-letter draft as editable Typst sources plus local PDFs.
 7. The user reviews the documents and handles any application outside the app.
 
 ## Product truths
 
 - A score is a decision aid, not an assessment of employability or hiring likelihood.
 - Tailored material must remain traceable to candidate-approved evidence. Missing evidence is a prompt to edit, not a gap to fill with plausible prose.
-- A CV can contain sensitive personal information. The user controls it: no external upload, model call, or submission is implied by the current product.
-- Real job discovery is not implemented. The visible roles are clear sample data, so the interface never implies they are live vacancies.
+- A CV can contain sensitive personal information. The CV and generated documents stay local in this pilot. A job provider receives only a narrow search term; no model call or submission is implied.
+- Current Jobicy and FreeHire listings are shown with their provider and original vacancy link. Their availability and coverage are not a claim of complete worldwide or African market coverage.
 - Downloading an application package is safe; submitting an application is a separate, human-controlled action.
 
 ## Acceptance criteria for user-facing changes

@@ -32,19 +32,34 @@ def main() -> None:
                 "name": "Taylor Example",
                 "email": "taylor@example.com",
                 "phone": "+49 123 456 789",
+                "location": "Berlin, Germany",
                 "headline": "Quantitative analyst",
                 "skills": ["Python", "Time series", "Risk modelling"],
-                "source_excerpt": "Built Python research tools for financial time-series analysis and communicated results to stakeholders.",
+                "cv_template": "meridian",
+                "experiences": [{
+                    "title": "Quantitative Analyst", "subtitle": "Example Capital", "dates": "2021 – Present", "location": "Berlin",
+                    "bullets": [
+                        "Built Python research tools for financial time-series analysis.",
+                        "Communicated risk-model findings to investment stakeholders.",
+                    ],
+                }],
+                "education": [{"title": "MSc Financial Engineering", "subtitle": "Example University", "dates": "2018 – 2020", "location": "Berlin", "bullets": []}],
             },
             "nordbeam-quant",
         )
         assert result["compiled"], result["errors"]
+        assert result["template"] == "meridian"
+        assert result["primary_cv"] == "tailored_cv_meridian.pdf"
+        assert "Meridian" not in result["tailoring"]["foregrounded_evidence"]  # evidence labels, never template names
         pdfs = [item for item in result["files"] if item["name"].endswith(".pdf")]
-        assert len(pdfs) == 2
+        assert {item["name"] for item in pdfs} == {"tailored_cv_meridian.pdf", "tailored_cv_ats_plain.pdf", "cover_letter.pdf"}
+        selected_adapter = app.DATA_ROOT / next(item["url"].removeprefix("/files/") for item in result["files"] if item["name"] == "tailored_cv_meridian.typ")
+        assert 'meridian-cv' in selected_adapter.read_text(encoding="utf-8")
         for item in pdfs:
             pdf = app.DATA_ROOT / item["url"].removeprefix("/files/")
             text = subprocess.run(["pdftotext", str(pdf), "-"], check=True, capture_output=True, text=True).stdout
-            assert "Taylor Example" in text
+            assert "Taylor" in text and "Example" in text, (item["name"], text[:500])
+        assert "Built Python research tools" in subprocess.run(["pdftotext", str(app.DATA_ROOT / next(item["url"].removeprefix("/files/") for item in result["files"] if item["name"] == "tailored_cv_meridian.pdf")), "-"], check=True, capture_output=True, text=True).stdout
         print("Field Notes smoke test passed: Typst CV and cover letter compiled with readable text.")
 
 
