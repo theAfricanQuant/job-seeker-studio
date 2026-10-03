@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+from html import escape as xml_escape
 import json
 import mimetypes
+import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -15,23 +19,26 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from http.cookies import CookieError, SimpleCookie
 from urllib.parse import parse_qs, urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 APP_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = APP_ROOT / "local_data"
-UPLOADS = DATA_ROOT / "uploads"
-DOCUMENTS = DATA_ROOT / "documents"
+WORKSPACES_ROOT = DATA_ROOT / "workspaces"
+UPLOADS = DATA_ROOT / "uploads"  # Legacy local-pilot path; never used by authenticated workspaces.
+DOCUMENTS = DATA_ROOT / "documents"  # Retained for isolated document-generation tests.
 CV_STUDIO_RUNTIME = APP_ROOT / "cv_studio_runtime"
 PROFILE_FILE = DATA_ROOT / "profile.json"
 JOB_CACHE_FILE = DATA_ROOT / "job_matches.json"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 JOBICY_ENDPOINT = "https://jobicy.com/api/v2/remote-jobs"
 FREEHIRE_ENDPOINT = "https://freehire.me/api/v1/jobs/search"
-DEVELOPMENT_EMAIL_CODE = "424242"
-VERIFIED_EMAILS: set[str] = set()
+WORKSPACE_TTL_SECONDS = 30 * 24 * 60 * 60
+WORKSPACE_COOKIE = "field_notes_workspace"
 CV_TEMPLATES = {"ats-plain", "crest", "emblem", "grid", "horizon", "index", "letterhead", "meridian", "quietude", "ridgeline", "soft-and-hard", "spine", "vertex"}
+PUBLIC_DOCUMENT_EXTENSIONS = {".pdf", ".docx"}
 
 JOBS = [
     {
@@ -81,7 +88,7 @@ KNOWN_SKILLS = {
 
 
 def ensure_data_directories() -> None:
-    for folder in (DATA_ROOT, UPLOADS, DOCUMENTS):
+    for folder in (DATA_ROOT, WORKSPACES_ROOT, UPLOADS, DOCUMENTS):
         folder.mkdir(parents=True, exist_ok=True)
 
 
@@ -90,9 +97,41 @@ def safe_filename(name: str) -> str:
     return cleaned or "cv.txt"
 
 
-def read_profile() -> dict:
-    if PROFILE_FILE.exists():
-        return json.loads(PROFILE_FILE.read_text(encoding="utf-8"))
+def workspace_key(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def workspace_root(token: str) -> Path:
+    return WORKSPACES_ROOT / workspace_key(token)
+
+
+def workspace_profile_file(token: str) -> Path:
+    return workspace_root(token) / "profile.json"
+
+
+def workspace_uploads(token: str) -> Path:
+    return workspace_root(token) / "uploads"
+
+
+def workspace_documents(token: str) -> Path:
+    return workspace_root(token) / "documents"
+
+
+def workspace_job_cache_file(token: str) -> Path:
+    return workspace_root(token) / "job_matches.json"
+
+
+def ensure_workspace(token: str) -> Path:
+    root = workspace_root(token)
+    for folder in (root, workspace_uploads(token), workspace_documents(token)):
+        folder.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def read_profile(token: str) -> dict:
+    profile_file = workspace_profile_file(token)
+    if profile_file.exists():
+        return json.loads(profile_file.read_text(encoding="utf-8"))
     return empty_profile()
 
 
@@ -115,7 +154,8 @@ def empty_profile() -> dict:
     }
 
 
-def write_profile(profile: dict) -> dict:
+def write_profile(profile: dict, workspace_token: str) -> dict:
+    ensure_workspace(workspace_token)
     clean = {
         "name": str(profile.get("name", "")).strip()[:100],
         "email": str(profile.get("email", "")).strip()[:160],
@@ -132,7 +172,7 @@ def write_profile(profile: dict) -> dict:
         "uploaded_file": str(profile.get("uploaded_file", "")).strip()[:180],
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    PROFILE_FILE.write_text(json.dumps(clean, indent=2), encoding="utf-8")
+    workspace_profile_file(workspace_token).write_text(json.dumps(clean, indent=2), encoding="utf-8")
     return clean
 
 
@@ -223,6 +263,15 @@ def parsed_name(lines: list[str]) -> str:
             if re.fullmatch(r"[A-Za-zÀ-ÿ .'-]{4,70}", candidate):
                 return candidate
     return ""
+
+
+def parsed_location(lines: list[str]) -> str:
+    for line in lines[:35]:
+        labelled = re.match(r"^(?:address|location|based in|residence)\s*[:|-]\s*(.+)$", line, re.I)
+        if labelled and len(labelled.group(1).strip()) <= 120:
+            return labelled.group(1).strip()
+    country_words = ("nigeria", "germany", "france", "kenya", "ghana", "south africa", "canada", "united kingdom", "usa", "united states", "europe")
+    return next((line for line in lines[:25] if any(country in line.lower() for country in country_words) and "@" not in line and len(line) <= 120), "")
 
 
 def clean_cv_line(value: str) -> str:
@@ -323,7 +372,7 @@ def parse_languages(lines: list[str]) -> list[str]:
     return normalize_skills([clean_cv_line(line) for line in [first, *lines[start + 1:end]] if ":" in line])
 
 
-def profile_from_text(text: str, uploaded_file: str) -> dict:
+def profile_from_text(text: str, uploaded_file: str, workspace_token: str) -> dict:
     lines = cv_lines(text)
     email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
     phone_match = re.search(r"(?:\+?\d[\d ()-]{7,}\d)", text)
@@ -338,7 +387,7 @@ def profile_from_text(text: str, uploaded_file: str) -> dict:
     key_start = next((index for index, line in enumerate(lines) if "key qualifications" in line.lower()), None)
     if key_start is not None:
         skills.extend(clean_cv_line(line) for line in lines[key_start + 1:key_start + 10] if clean_cv_line(line))
-    location = next((line for line in lines[:20] if "germany" in line.lower() and "@" not in line), "")
+    location = parsed_location(lines)
     return write_profile({
         "name": candidate_name,
         "email": email_match.group(0) if email_match else "",
@@ -351,7 +400,7 @@ def profile_from_text(text: str, uploaded_file: str) -> dict:
         "languages": parse_languages(lines),
         "source_excerpt": "\n".join(lines[:180]),
         "uploaded_file": uploaded_file,
-    })
+    }, workspace_token)
 
 
 def job_matches(profile: dict) -> list[dict]:
@@ -467,14 +516,34 @@ def fetch_remote_jobs(profile: dict) -> tuple[list[dict], list[str]]:
     return score_listings(profile, list(unique.values()))[:40], sources
 
 
-def normalize_email(value: object) -> str:
-    email = str(value or "").strip().lower()
-    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
-        raise ValueError("Enter a valid email address first.")
-    return email
+def production_mode() -> bool:
+    return os.getenv("FIELD_NOTES_ENV", "development").strip().lower() == "production"
 
 
-def current_jobs(profile: dict) -> tuple[list[dict], str]:
+def browser_workspace_token(cookie_header: str) -> str | None:
+    if not cookie_header:
+        return None
+    cookie = SimpleCookie()
+    try:
+        cookie.load(cookie_header)
+    except (CookieError, ValueError):
+        return None
+    morsel = cookie.get(WORKSPACE_COOKIE)
+    if not morsel or not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", morsel.value):
+        return None
+    return morsel.value
+
+
+def new_workspace_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def workspace_cookie(token: str) -> str:
+    secure = "; Secure" if production_mode() else ""
+    return f"{WORKSPACE_COOKIE}={token}; Max-Age={WORKSPACE_TTL_SECONDS}; Path=/; HttpOnly; SameSite=Lax{secure}"
+
+
+def current_jobs(profile: dict, owner_email: str) -> tuple[list[dict], str]:
     if not (profile.get("headline") or profile.get("skills") or profile.get("source_excerpt")):
         return [], "Save a candidate profile to search remote jobs."
     try:
@@ -484,13 +553,15 @@ def current_jobs(profile: dict) -> tuple[list[dict], str]:
         source = "Local demo roles — live remote search was unavailable"
     else:
         source = "Live roles from " + " + ".join(providers)
-    JOB_CACHE_FILE.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
+    ensure_workspace(owner_email)
+    workspace_job_cache_file(owner_email).write_text(json.dumps(jobs, indent=2), encoding="utf-8")
     return jobs, source
 
 
-def job_by_id(job_id: str) -> dict | None:
-    if JOB_CACHE_FILE.exists():
-        cached = json.loads(JOB_CACHE_FILE.read_text(encoding="utf-8"))
+def job_by_id(job_id: str, owner_email: str | None = None) -> dict | None:
+    job_cache = workspace_job_cache_file(owner_email) if owner_email else JOB_CACHE_FILE
+    if job_cache.exists():
+        cached = json.loads(job_cache.read_text(encoding="utf-8"))
         match = next((item for item in cached if item.get("id") == job_id), None)
         if match:
             return match
@@ -689,6 +760,106 @@ def compile_cv_studio(studio: Path, template: str) -> tuple[Path | None, str]:
     return output, ""
 
 
+def word_run(text: object, *, bold: bool = False, italic: bool = False) -> str:
+    """Small, dependency-free OOXML writer for editable, content-first Word files."""
+    properties = "<w:rPr>" + ("<w:b/>" if bold else "") + ("<w:i/>" if italic else "") + "</w:rPr>"
+    pieces = str(text or "").split("\n")
+    return properties + "".join(f'<w:t xml:space="preserve">{xml_escape(piece)}</w:t>' + ("<w:br/>" if index < len(pieces) - 1 else "") for index, piece in enumerate(pieces))
+
+
+def word_paragraph(text: object = "", *, style: str = "", bold: bool = False, italic: bool = False, centered: bool = False) -> str:
+    properties = (f'<w:pStyle w:val="{style}"/>' if style else "") + ("<w:jc w:val=\"center\"/>" if centered else "")
+    return f"<w:p><w:pPr>{properties}</w:pPr><w:r>{word_run(text, bold=bold, italic=italic)}</w:r></w:p>"
+
+
+def word_bullet(text: object) -> str:
+    return f'<w:p><w:pPr><w:pStyle w:val="ListBullet"/></w:pPr><w:r>{word_run("• " + str(text or ""))}</w:r></w:p>'
+
+
+def write_docx(path: Path, paragraphs: list[str], title: str) -> None:
+    """Write an editable DOCX without adding a runtime dependency to the local app."""
+    created = datetime.now(timezone.utc).isoformat()
+    document = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>%s
+<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1080" w:right="1080" w:bottom="1080" w:left="1080"/></w:sectPr></w:body></w:document>""" % "".join(paragraphs)
+    styles = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+ <w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:color w:val="000000"/><w:sz w:val="21"/></w:rPr></w:rPrDefault></w:docDefaults>
+ <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="110" w:line="276" w:lineRule="auto"/></w:pPr></w:style>
+ <w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="80"/><w:jc w:val="center"/></w:pPr><w:rPr><w:color w:val="000000"/><w:b/><w:sz w:val="34"/></w:rPr></w:style>
+ <w:style w:type="paragraph" w:styleId="Subtitle"><w:name w:val="Subtitle"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="190"/><w:jc w:val="center"/></w:pPr><w:rPr><w:color w:val="000000"/><w:sz w:val="23"/></w:rPr></w:style>
+ <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="230" w:after="80"/><w:keepNext/></w:pPr><w:rPr><w:color w:val="000000"/><w:b/><w:sz w:val="25"/></w:rPr></w:style>
+ <w:style w:type="paragraph" w:styleId="Role"><w:name w:val="Role"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="120" w:after="20"/><w:keepNext/></w:pPr><w:rPr><w:color w:val="000000"/><w:b/></w:rPr></w:style>
+ <w:style w:type="paragraph" w:styleId="Meta"><w:name w:val="Meta"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="35"/></w:pPr><w:rPr><w:color w:val="404040"/><w:i/><w:sz w:val="19"/></w:rPr></w:style>
+ <w:style w:type="paragraph" w:styleId="ListBullet"><w:name w:val="List Bullet"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="360" w:hanging="180"/><w:spacing w:after="35"/></w:pPr></w:style>
+</w:styles>"""
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>"""
+    relationships = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>"""
+    document_relationships = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"""
+    core = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>{xml_escape(title)}</dc:title><dc:creator>Field Notes Career Studio</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created></cp:coreProperties>'''
+    app = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Field Notes Career Studio</Application></Properties>"""
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", relationships)
+        archive.writestr("word/document.xml", document)
+        archive.writestr("word/styles.xml", styles)
+        archive.writestr("word/_rels/document.xml.rels", document_relationships)
+        archive.writestr("docProps/core.xml", core)
+        archive.writestr("docProps/app.xml", app)
+
+
+def cv_docx(profile: dict, job: dict, output: Path) -> dict:
+    tailored, tailoring = tailored_evidence(profile, job)
+    title = "Curriculum Vitae"
+    contact = " | ".join(value for value in (tailored.get("email"), tailored.get("phone"), tailored.get("location")) if value)
+    paragraphs = [word_paragraph(title, style="Title", centered=True), word_paragraph(tailored.get("name") or "Candidate", style="Subtitle", centered=True)]
+    if tailored.get("headline"):
+        paragraphs.append(word_paragraph(tailored["headline"], style="Meta", centered=True))
+    if contact:
+        paragraphs.append(word_paragraph(contact, style="Meta", centered=True))
+    paragraphs.extend([word_paragraph("Profile", style="Heading1"), word_paragraph(f"{tailored.get('headline') or 'Professional profile'}. This application version orders only approved evidence against the selected {job.get('title', 'role')} listing.")])
+    if tailored.get("skills"):
+        paragraphs.extend([word_paragraph("Core Competencies", style="Heading1"), word_paragraph(" • ".join(tailored["skills"]))])
+
+    def add_records(heading: str, records: list[dict]) -> None:
+        if not records:
+            return
+        paragraphs.append(word_paragraph(heading, style="Heading1"))
+        for record in records:
+            heading_line = " | ".join(value for value in (record.get("title"), record.get("subtitle")) if value)
+            meta = " | ".join(value for value in (record.get("dates"), record.get("location")) if value)
+            paragraphs.append(word_paragraph(heading_line, style="Role"))
+            if meta:
+                paragraphs.append(word_paragraph(meta, style="Meta"))
+            paragraphs.extend(word_bullet(bullet) for bullet in record.get("bullets", []))
+
+    add_records("Experience", tailored.get("experiences", []))
+    add_records("Projects", tailored.get("projects", []))
+    add_records("Education", tailored.get("education", []))
+    if tailored.get("languages"):
+        paragraphs.extend([word_paragraph("Languages", style="Heading1"), word_paragraph(" • ".join(tailored["languages"]))])
+    write_docx(output, paragraphs, title)
+    return tailoring
+
+
+def cover_docx(profile: dict, job: dict, output: Path) -> None:
+    title = f"Cover Letter for {job['title']} at {job['company']}"
+    contact = " | ".join(filter(None, [profile.get("email"), profile.get("phone"), profile.get("location")]))
+    skills = ", ".join(profile.get("skills", [])[:5]) or "the verified skills in my profile"
+    paragraphs = [word_paragraph(title, style="Title", centered=True), word_paragraph(profile.get("name") or "Candidate", style="Subtitle", centered=True)]
+    if contact:
+        paragraphs.append(word_paragraph(contact, style="Meta", centered=True))
+    paragraphs.extend([
+        word_paragraph(f"{job['company']}\n{job['location']}"),
+        word_paragraph("Dear hiring team,"),
+        word_paragraph(f"I am applying for the {job['title']} role at {job['company']}. My approved profile highlights experience and capabilities in {skills}. I am particularly interested in the opportunity to contribute to work that involves {job['summary'].lower()}"),
+        word_paragraph("This letter is a truthful starting draft. Before sending it, I will review the wording, add only specific evidence I can substantiate, and make sure it reflects my own voice."),
+        word_paragraph("Sincerely,"),
+        word_paragraph(profile.get("name") or "Candidate"),
+    ])
+    write_docx(output, paragraphs, title)
+
+
 def prepare_cv_studio(folder: Path, profile: dict, job: dict) -> tuple[Path, dict]:
     """Create an isolated, local render project so one candidate's data never becomes shared template data."""
     if not CV_STUDIO_RUNTIME.is_dir():
@@ -700,8 +871,8 @@ def prepare_cv_studio(folder: Path, profile: dict, job: dict) -> tuple[Path, dic
     return studio, tailoring
 
 
-def generate_documents(profile: dict, job_id: str) -> dict:
-    job = job_by_id(job_id)
+def generate_documents(profile: dict, job_id: str, owner_email: str | None = None) -> dict:
+    job = job_by_id(job_id, owner_email)
     if not job:
         raise ValueError("Choose a job before generating documents.")
     if not profile.get("name"):
@@ -709,24 +880,25 @@ def generate_documents(profile: dict, job_id: str) -> dict:
     if not profile.get("experiences"):
         raise ValueError("Add and save at least one structured experience record before generating. The original CV text is reference material, not CV content.")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    folder = DOCUMENTS / stamp
+    documents_root = workspace_documents(owner_email) if owner_email else DOCUMENTS
+    documents_root.mkdir(parents=True, exist_ok=True)
+    folder = documents_root / stamp
     folder.mkdir(parents=True, exist_ok=True)
     template = profile.get("cv_template", "ats-plain")
     if template not in CV_TEMPLATES:
         raise ValueError("Choose one of the CV Studio templates before generating.")
-    studio, tailoring = prepare_cv_studio(folder, profile, job)
-    cv_source = folder / "cv-content.typ"
-    selected_adapter = folder / f"tailored_cv_{template}.typ"
-    ats_adapter = folder / "tailored_cv_ats_plain.typ"
-    letter_source = folder / "cover_letter.typ"
+    studio, _ = prepare_cv_studio(folder, profile, job)
+    render_source = folder / "render_source"
+    render_source.mkdir(exist_ok=True)
+    letter_source = render_source / "cover_letter.typ"
     selected_pdf = folder / f"tailored_cv_{template}.pdf"
     ats_pdf = folder / "tailored_cv_ats_plain.pdf"
     letter_pdf = folder / "cover_letter.pdf"
-    shutil.copy2(studio / "cv-content.typ", cv_source)
-    shutil.copy2(studio / "adapters" / f"{template}.typ", selected_adapter)
-    if template != "ats-plain":
-        shutil.copy2(studio / "adapters" / "ats-plain.typ", ats_adapter)
+    editable_cv = folder / "tailored_cv_editable.docx"
+    editable_letter = folder / "cover_letter_editable.docx"
     letter_source.write_text(cover_typst(profile, job), encoding="utf-8")
+    docx_tailoring = cv_docx(profile, job, editable_cv)
+    cover_docx(profile, job, editable_letter)
     selected_studio_pdf, selected_error = compile_cv_studio(studio, template)
     selected_ok = selected_studio_pdf is not None
     if selected_studio_pdf:
@@ -738,24 +910,23 @@ def generate_documents(profile: dict, job_id: str) -> dict:
         if ats_studio_pdf:
             shutil.copy2(ats_studio_pdf, ats_pdf)
     letter_ok, letter_error = compile_typst(letter_source, letter_pdf)
-    files = [cv_source, selected_adapter, letter_source]
-    if template != "ats-plain":
-        files.append(ats_adapter)
+    files = [editable_cv, editable_letter]
     if selected_ok:
         files.append(selected_pdf)
     if template != "ats-plain" and ats_ok:
         files.append(ats_pdf)
     if letter_ok:
         files.append(letter_pdf)
+    file_root = workspace_root(owner_email) if owner_email else DATA_ROOT
     return {
         "job": job,
         "compiled": selected_ok and ats_ok and letter_ok,
         "template": template,
         "primary_cv": selected_pdf.name if selected_ok else "",
-        "tailoring": tailoring,
-        "message": "Selected CV Studio template and ATS Plain CV generated locally." if selected_ok and ats_ok and letter_ok else "Typst source generated; PDF compilation needs attention.",
+        "tailoring": docx_tailoring,
+        "message": "PDF and editable Word CV and cover letter are ready." if selected_ok and ats_ok and letter_ok else "Editable Word documents are ready; PDF compilation needs attention.",
         "errors": [error for error in (selected_error, ats_error, letter_error) if error],
-        "files": [{"name": file.name, "url": "/files/" + file.relative_to(DATA_ROOT).as_posix()} for file in files],
+        "files": [{"name": file.name, "url": "/files/" + file.relative_to(file_root).as_posix()} for file in files],
     }
 
 
@@ -767,13 +938,23 @@ class FieldNotesHandler(SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         print("[Field Notes] " + format % args)
 
-    def send_json(self, value: object, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def send_json(self, value: object, status: HTTPStatus = HTTPStatus.OK, headers: dict[str, str] | None = None) -> None:
         payload = json.dumps(value).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
+
+    def browser_workspace(self) -> tuple[str, dict[str, str]]:
+        token = browser_workspace_token(self.headers.get("Cookie", ""))
+        if token:
+            return token, {}
+        token = new_workspace_token()
+        ensure_workspace(token)
+        return token, {"Set-Cookie": workspace_cookie(token)}
 
     def json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
@@ -785,15 +966,21 @@ class FieldNotesHandler(SimpleHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         if path == "/api/status":
-            return self.send_json({"typst_available": bool(shutil.which("typst")), "local_only": True, "email_auth_mode": "development"})
+            return self.send_json({"typst_available": bool(shutil.which("typst")), "local_only": not production_mode()})
         if path == "/api/profile":
-            return self.send_json(read_profile())
+            token, headers = self.browser_workspace()
+            return self.send_json(read_profile(token), headers=headers)
         if path == "/api/jobs":
-            jobs, source = current_jobs(read_profile())
-            return self.send_json({"jobs": jobs, "source": source})
+            token, headers = self.browser_workspace()
+            jobs, source = current_jobs(read_profile(token), token)
+            return self.send_json({"jobs": jobs, "source": source}, headers=headers)
         if path.startswith("/files/"):
-            requested = (DATA_ROOT / unquote(path.removeprefix("/files/"))).resolve()
-            if not requested.is_file() or DATA_ROOT.resolve() not in requested.parents:
+            token = browser_workspace_token(self.headers.get("Cookie", ""))
+            if not token:
+                return self.send_json({"error": "This download belongs to a different browser workspace."}, HTTPStatus.UNAUTHORIZED)
+            root = workspace_root(token).resolve()
+            requested = (root / unquote(path.removeprefix("/files/"))).resolve()
+            if not requested.is_file() or requested.suffix.lower() not in PUBLIC_DOCUMENT_EXTENSIONS or root not in requested.parents:
                 return self.send_error(HTTPStatus.NOT_FOUND, "File not found")
             mime, _ = mimetypes.guess_type(requested.name)
             content = requested.read_bytes()
@@ -828,6 +1015,7 @@ class FieldNotesHandler(SimpleHTTPRequestHandler):
         try:
             path = urlparse(self.path).path
             body = self.json_body()
+            token, headers = self.browser_workspace()
             if path == "/api/upload":
                 name = safe_filename(str(body.get("name", "cv.txt")))
                 encoded = str(body.get("content", ""))
@@ -837,31 +1025,23 @@ class FieldNotesHandler(SimpleHTTPRequestHandler):
                     raise ValueError("The selected file could not be decoded.") from error
                 if not content or len(content) > MAX_UPLOAD_BYTES:
                     raise ValueError("Use a non-empty CV smaller than 8 MB.")
-                destination = UPLOADS / (datetime.now().strftime("%Y%m%d-%H%M%S-") + name)
+                destination = workspace_uploads(token) / (datetime.now().strftime("%Y%m%d-%H%M%S-") + name)
                 destination.write_bytes(content)
-                profile = profile_from_text(extract_text(destination), name)
-                return self.send_json({"profile": profile, "message": "CV read locally. Review the extracted profile before generating documents."})
+                profile = profile_from_text(extract_text(destination), name, token)
+                return self.send_json({"profile": profile, "message": "CV read. Review the extracted profile before generating documents."}, headers=headers)
             if path == "/api/profile":
-                return self.send_json({"profile": write_profile(body), "message": "Profile saved locally."})
-            if path == "/api/auth/request":
-                email = normalize_email(body.get("email"))
-                return self.send_json({"email": email, "development_code": DEVELOPMENT_EMAIL_CODE, "message": "Local test code created. Production sends this code by email."})
-            if path == "/api/auth/verify":
-                email = normalize_email(body.get("email"))
-                if str(body.get("code", "")).strip() != DEVELOPMENT_EMAIL_CODE:
-                    raise ValueError("That local test code is not correct.")
-                VERIFIED_EMAILS.add(email)
-                return self.send_json({"email": email, "verified": True, "message": "Email confirmed for this local session."})
+                return self.send_json({"profile": write_profile(body, token), "message": "Profile saved in this browser workspace."}, headers=headers)
             if path == "/api/generate":
-                profile = read_profile()
-                if normalize_email(profile.get("email")) not in VERIFIED_EMAILS:
-                    raise ValueError("Confirm the email code before generating a document package.")
-                return self.send_json(generate_documents(profile, str(body.get("job_id", ""))))
+                profile = read_profile(token)
+                return self.send_json(generate_documents(profile, str(body.get("job_id", "")), token), headers=headers)
             return self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+        except PermissionError as error:
+            return self.send_json({"error": str(error)}, HTTPStatus.UNAUTHORIZED)
         except (ValueError, json.JSONDecodeError) as error:
             return self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
         except Exception as error:  # pragma: no cover - defensive local-app boundary
-            return self.send_json({"error": "Unexpected local error: " + str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            message = "Unexpected server error. Please try again." if production_mode() else "Unexpected local error: " + str(error)
+            return self.send_json({"error": message}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
 
 def main() -> None:

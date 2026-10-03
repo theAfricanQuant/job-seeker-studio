@@ -1,11 +1,11 @@
 # Roadmap
 
-## Next: strengthen the local workflow
+## Next: strengthen the pilot
 
 1. Add individual accomplishments, links, certifications, and an explicit per-signal include/exclude control to the reviewed candidate record.
 2. Add an explicit page-length check and rendered-page review to every generated template.
 3. Add document history, comparison, and visible deletion of uploaded CVs/documents.
-4. Add document history, compare revisions, and make deletion of uploaded CVs/documents visible in the interface.
+4. Add a clear retention policy and workspace deletion flow before inviting external testers.
 
 ## Add real job discovery only with an approved source
 
@@ -26,6 +26,6 @@ The intended hosted model provider is Nous Research. Before its API sees candida
 3. Make the model output an editable draft with source evidence, never a final truth.
 4. Add retention/deletion policy, cost limits, and prompt-injection handling for job descriptions.
 
-## Production readiness
+## Before public hosting
 
-Authentication, encrypted storage, audit events, rate limits, backups, and multi-user access controls are a separate milestone. Preserve the current human-review-before-submit boundary.
+The pilot now uses an opaque browser-workspace cookie so visitors can start from their CV without an account. Before public hosting, add TLS and reverse-proxy configuration; request/IP rate limits; encrypted backups; audit events; a deletion and retention policy; and optional email-based account recovery for visitors who want to return after clearing browser data. Move metadata and files to PostgreSQL plus object storage before running multiple web instances. Preserve the current human-review-before-submit boundary.
