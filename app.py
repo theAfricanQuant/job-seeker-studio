@@ -1663,8 +1663,15 @@ class FieldNotesHandler(SimpleHTTPRequestHandler):
                     raise ValueError("Use a non-empty CV smaller than 8 MB.")
                 destination = workspace_uploads(token) / (datetime.now().strftime("%Y%m%d-%H%M%S-") + name)
                 destination.write_bytes(content)
-                profile = profile_from_text(extract_text(destination), name, token)
-                return self.send_json({"profile": profile, "message": "CV read. Review the extracted profile before generating documents."}, headers=headers)
+                text = extract_text(destination)
+                if ai_reader is not None and ai_reader.enabled():
+                    profile, notes = ai_hybrid_profile(text, name, token)
+                else:
+                    profile, notes = profile_from_text(text, name, token), []
+                used_ai = bool(notes) and not any(note.startswith("rules only") or note == "ai module missing" for note in notes)
+                message = ("CV read — a language model helped label the tricky lines. Check every field before you go on."
+                           if used_ai else "CV read. Review the extracted profile before generating documents.")
+                return self.send_json({"profile": profile, "reader": "ai" if used_ai else "rules", "message": message}, headers=headers)
             if path == "/api/profile":
                 return self.send_json({"profile": write_profile(body, token), "message": "Profile saved in this browser workspace."}, headers=headers)
             if path == "/api/generate":
