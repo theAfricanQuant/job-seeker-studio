@@ -83,7 +83,6 @@ KNOWN_SKILLS = {
     "statistics": "Statistics",
     "sql": "SQL",
     "pandas": "Pandas",
-    "german": "German",
 }
 
 
@@ -181,8 +180,11 @@ def normalize_skills(value: object) -> list[str]:
     found: list[str] = []
     for item in raw:
         skill = str(item).strip()
+        if len(skill) > 70:   # cut on a word, not mid-word
+            skill = skill[:70].rsplit(" ", 1)[0] or skill[:70]
+            skill = re.sub(r"\s+(?:and|or|the|of|with|in|for|to|a|an|on|by|as|at|incl\.?)$", "", skill, flags=re.I)
         if skill and skill.lower() not in {s.lower() for s in found}:
-            found.append(skill[:70])
+            found.append(skill)
     return found[:24]
 
 
@@ -474,30 +476,68 @@ SECTION_BREAKS = (
     "volunteering", "additional information", "additional training", "affiliations",
     "additional training, experience and affiliations", "computer/internet proficiency",
     "computer skills", "computer proficiency", "personal data", "personal details", "contact",
-    "other relevant", "referees",
+    "other relevant", "other relevant information", "referees", "regional/international experience",
+    "regional experience", "international experience",
 )
+
+# Headings that are distinctive enough to recognise as a single word at the start of a line.
+DISTINCTIVE_HEADINGS = {
+    "languages", "language", "education", "skills", "profile", "summary", "interests", "references",
+    "referees", "certifications", "certificates", "publications", "awards", "hobbies", "training",
+    "courses", "qualifications", "affiliations",
+}
 
 # Bullets come in many glyphs: Word and PDF exports use ●, ▪, ‣ as often as •.
 BULLET_RE = re.compile(r"^(?:[•●○◦▪▫‣·*·–—]|o\s|-)\s*(.+)$")
 
 # "2007 – Present", "2007-Date", "2007 to date", "01/2019 – 06/2021".
-DATE_PATTERN = re.compile(
+DATE_RANGE = (
     r"(?:(?:0?[1-9]|1[0-2])[/.-]\d{4}|\d{4})\s*(?:[–—-]|\bto\b)\s*"
-    r"(?:(?:0?[1-9]|1[0-2])[/.-]\d{4}|\d{4}|date|till date|to date|present|now|current)",
-    re.I,
+    r"(?:(?:0?[1-9]|1[0-2])[/.-]\d{4}|\d{4}|date|till date|to date|present|now|current)"
 )
+DATE_PATTERN = re.compile(DATE_RANGE, re.I)
+
+
+def heading_remainder(line: str, wanted: set[str]) -> str | None:
+    """When a heading shares its line with the content after it, return that content.
+
+    Two-column PDFs print `Work Experience   Africa Partnerships Energy Coordinator`
+    on one line; the heading has to be recognised without swallowing the job title.
+    """
+    words = line.split()
+    for count in range(min(4, len(words) - 1), 0, -1):
+        prefix = " ".join(words[:count])
+        key = heading_key(prefix.rstrip(":|·-"))
+        if key not in wanted:
+            continue
+        if count == 1:
+            # A single generic word ("Experience Manager | Acme") is a job title, not a heading.
+            follows = line[len(prefix):]
+            if follows[:1] not in {":", "|", "·"} and key not in DISTINCTIVE_HEADINGS:
+                continue
+        return " ".join(words[count:])
+    return None
+
+
+def section_start(lines: list[str], names: tuple[str, ...], after: int = 0) -> tuple[int, str] | None:
+    """The first heading line, plus anything sharing that line with it."""
+    wanted = {heading_key(name) for name in names}
+    for index in range(after, len(lines)):
+        line = lines[index]
+        if len(line) > 120 or BULLET_RE.match(line.strip()):
+            continue
+        if heading_key(line) in wanted:
+            return index, ""
+        remainder = heading_remainder(line, wanted)
+        if remainder:
+            return index, remainder
+    return None
 
 
 def section_index(lines: list[str], names: tuple[str, ...], after: int = 0) -> int | None:
     """Index of the first heading line naming one of `names`, searched from `after`."""
-    wanted = {heading_key(name) for name in names}
-    for index in range(after, len(lines)):
-        line = lines[index]
-        if len(line) > 60 or BULLET_RE.match(line.strip()):
-            continue
-        if heading_key(line) in wanted:
-            return index
-    return None
+    found = section_start(lines, names, after)
+    return found[0] if found else None
 
 
 def split_trailing_place(value: str) -> tuple[str, str]:
@@ -529,9 +569,11 @@ def split_role_header(header: str, date_pattern: re.Pattern) -> tuple[str, str, 
     """Split "Title — Organisation, City (2022 – Present)" into title, organisation and location."""
     text = strip_work_mode(re.sub(r"\(\s*\)|\[\s*\]", " ", date_pattern.sub(" ", header)))
     organisation = location = ""
-    # A bracket that is not a date carries the organisation: "Title (Organisation, City)".
+    # A bracket that is not a date carries the organisation: "Title (Organisation, City)" —
+    # but only when no separator ("|", "—", ":") already split title from organisation.
     inside = re.search(r"\(([^()]*)\)", text)
-    if inside and inside.group(1).strip():
+    separator = re.search(r"[|—–]|\s-\s|:\s", text)
+    if inside and inside.group(1).strip() and (separator is None or separator.start() > inside.start()):
         title = clean_cv_line(text[:inside.start()])
         organisation = clean_cv_line(inside.group(1))
         trailing = clean_cv_line(text[inside.end():])
@@ -572,12 +614,38 @@ def institution_below(section: list[str], start: int) -> tuple[str, str]:
     return "", ""
 
 
+def absorb_bleed(rows: list[str]) -> list[str]:
+    """A line that opens with a date and continues in prose is the tail of the entry above.
+
+    A two-column PDF keeps printing the right column while the left column has already
+    moved on to the next date ("10/2020 – 10/2022   and other GET.transform donors).").
+    """
+    merged: list[str] = []
+    for line in rows:
+        clean = clean_cv_line(line)
+        lead = re.match(r"^(" + DATE_RANGE + r")\s+(\S.*)$", clean, re.I)
+        if lead and merged:
+            tail = lead.group(2)
+            previous = clean_cv_line(merged[-1])
+            if tail[:1].islower() or previous[-1:] in {",", "(", "-", "–", "—", ";", ":"}:
+                merged[-1] = clean_cv_line(f"{merged[-1]} {tail}")
+                merged.append(lead.group(1))
+                continue
+        merged.append(line)
+    return merged
+
+
 def parse_work_experience(lines: list[str]) -> list[dict]:
-    start = section_index(lines, EXPERIENCE_HEADINGS)
-    if start is None:
+    found = section_start(lines, EXPERIENCE_HEADINGS)
+    if not found:
         return []
+    start, remainder = found
+    if remainder:
+        # The heading shared its line with the first role's title.
+        lines = list(lines)
+        lines[start] = remainder
     end = section_index(lines, SECTION_BREAKS, start + 1) or len(lines)
-    chunk = lines[start + 1:end]
+    chunk = absorb_bleed(lines[start + 1:end])
     date_pattern = DATE_PATTERN
     boundaries = [index for index, line in enumerate(chunk) if date_pattern.search(line)]
     records: list[dict] = []
@@ -594,8 +662,11 @@ def parse_work_experience(lines: list[str]) -> list[dict]:
                 if current:
                     bullets.append(current)
                 current = clean_cv_line(marker.group(1))
-            elif current:
+            elif current and len(current) < 220:
                 current = clean_cv_line(current + " " + clean)
+            elif current:
+                bullets.append(current)
+                current = clean
         if current:
             bullets.append(current)
         return bullets[:7]
@@ -605,26 +676,86 @@ def parse_work_experience(lines: list[str]) -> list[dict]:
     for name in EXPERIENCE_HEADINGS:
         lead_raw = re.sub(re.escape(name), " ", lead_raw, flags=re.I)
     lead_title, lead_org, lead_location = split_role_header(lead_raw.strip(" |·-"), date_pattern)
-    if boundaries and lead_title and lead_org:
-        first_date = date_pattern.search(chunk[boundaries[0]])
-        first_end = boundaries[1] if len(boundaries) > 1 else len(chunk)
-        records.append({"title": lead_title[:160], "subtitle": lead_org[:160], "dates": first_date.group(0)[:80] if first_date else "", "location": lead_location[:80], "bullets": collect_bullets(chunk[boundaries[0] + 1:first_end])})
+    consumed: set[int] = set()
+    if lead_title:
+        first_line = clean_cv_line(chunk[0]) if chunk else ""
+        if not lead_org and first_line and not BULLET_RE.match(chunk[0].strip()) and not date_pattern.fullmatch(first_line):
+            if date_pattern.search(first_line) or any(re.search(r"(?<![a-z])" + re.escape(mode) + r"(?![a-z])", first_line, re.I) for mode in WORK_MODES):
+                _, lead_org, lead_location = split_role_header(chunk[0], date_pattern)
+            else:
+                lead_org, lead_location = split_trailing_place(first_line)
+        if boundaries:
+            first_date = date_pattern.search(chunk[boundaries[0]])
+            first_end = boundaries[1] if len(boundaries) > 1 else len(chunk)
+            lead_dates = first_date.group(0)[:80] if first_date else ""
+            lead_bullets = collect_bullets(chunk[boundaries[0] + 1:first_end])
+            consumed.add(boundaries[0])
+        else:
+            lead_dates, lead_bullets = "", collect_bullets(chunk)
+        records.append({
+            "title": lead_title[:160],
+            "subtitle": lead_org[:160],
+            "dates": lead_dates,
+            "location": lead_location[:80],
+            "bullets": lead_bullets,
+        })
 
     for position, begin in enumerate(boundaries):
+        if begin in consumed:
+            continue
         finish = boundaries[position + 1] if position + 1 < len(boundaries) else len(chunk)
         segment = chunk[begin:finish]
         date_match = date_pattern.search(segment[0])
         if not date_match:
             continue
-        title, organisation, location = split_role_header(segment[0], date_pattern)
-        if begin > 0 and (not title or not organisation):
+        # A date-only line means the title sits further down, as in a left-column layout.
+        header_index = 0
+        bordered_header = False
+        if date_pattern.fullmatch(clean_cv_line(segment[0]).strip()):
+            # Left-column layouts mark the title cell with a border glyph ("Title │ Org"),
+            # and the lines above the title belong to the entry before this one.
+            bordered = next(
+                (offset for offset, line in enumerate(segment)
+                 if offset > 0 and ("│" in line or "|" in line) and not BULLET_RE.match(line.strip())),
+                None,
+            )
+            if bordered is not None:
+                bordered_header = True
+                header_index = bordered
+                while header_index > 1 and clean_cv_line(segment[header_index])[:1].islower():
+                    header_index -= 1   # the title cell wrapped onto the line above
+            else:
+                header_index = next(
+                    (offset for offset, line in enumerate(segment)
+                     if offset > 0 and not BULLET_RE.match(line.strip())
+                     and not date_pattern.fullmatch(clean_cv_line(line).strip())),
+                    0,
+                )
+        header_lines = [segment[header_index]]
+        cursor = header_index + 1
+        while cursor < len(segment) and not BULLET_RE.match(segment[cursor].strip()):
+            following_line = clean_cv_line(segment[cursor])
+            if not following_line:
+                break
+            previous_raw = segment[cursor - 1].strip()
+            wraps = following_line[:1].islower() or bool(re.search(r"[|│&,–—/]\s*$|\b(?:and|of|the|in|for|with|to|by|at)\s*$", previous_raw, re.I))
+            if not wraps and (
+                not bordered_header                      # a title cell that spans lines
+                or len(" ".join(header_lines)) >= 140
+                or previous_raw[-1:] in ".!?;"
+            ):
+                break   # the line above finished cleanly, so this is a new block
+            header_lines.append(segment[cursor])
+            cursor += 1
+        title, organisation, location = split_role_header(clean_cv_line(" ".join(header_lines)), date_pattern)
+        if header_index == 0 and (not title or not organisation) and begin > 0:
             previous = chunk[begin - 1]
-            if not date_pattern.search(previous):
+            if not date_pattern.search(previous) and not BULLET_RE.match(previous.strip()) and len(clean_cv_line(previous)) <= 120:
                 previous_title, previous_org, previous_location = split_role_header(previous, date_pattern)
                 title = title or previous_title
                 organisation = organisation or previous_org
                 location = location or previous_location
-        following = segment[1:]
+        following = segment[cursor:]
         if following and looks_like_place(following[0]):
             place = clean_cv_line(following[0])
             if not location:
@@ -635,17 +766,22 @@ def parse_work_experience(lines: list[str]) -> list[dict]:
             organisation, extra_location = split_trailing_place(clean_cv_line(" ".join(filter(None, [organisation, strip_work_mode(following[0])]))))
             location = location or extra_location
         bullets = collect_bullets(following)
+        orphans = collect_bullets(segment[1:header_index])
+        if orphans and records:
+            # Lines printed above the title of this entry close the entry before it.
+            records[-1]["bullets"] = (records[-1]["bullets"] + orphans)[:10]
         if title and (organisation or bullets):
             records.append({"title": title[:160], "subtitle": organisation[:160], "dates": date_match.group(0)[:80], "location": location[:80], "bullets": bullets[:7]})
     return records[:8]
 
 
 def parse_education(lines: list[str]) -> list[dict]:
-    start = section_index(lines, EDUCATION_HEADINGS)
-    if start is None:
+    found = section_start(lines, EDUCATION_HEADINGS)
+    if not found:
         return []
+    start, remainder = found
     end = section_index(lines, SECTION_BREAKS + EXPERIENCE_HEADINGS, start + 1) or len(lines)
-    section = lines[start + 1:end]
+    section = ([remainder] if remainder else []) + lines[start + 1:end]
     records: list[dict] = []
     degree_pattern = re.compile(r"\b(?:MBA|M\.Sc|MSc|MA|MEng|B\.Sc|BSc|BEng|B\.Eng|BA|Bachelor|Master|PhD|Ph\.D|Doctorate|Certificate|Diploma|HND|OND|PGD)\b", re.I)
     junk_pattern = re.compile(r"\b(?:Thesis|Dissertation|Graduated|Grade|Grades|Result|Results|Modules|Distance|Award|Awards|Ref|Ref\.|Project|Projects)\b.*$", re.I)
@@ -667,6 +803,8 @@ def parse_education(lines: list[str]) -> list[dict]:
         detail = junk_pattern.sub("", detail)
         parts = re.split(r"\s*[|—–]\s*|\s+-\s+", clean_cv_line(detail), maxsplit=1)
         title = clean_cv_line(parts[0])
+        if title.endswith(".") and "." not in title[:-1]:
+            title = title[:-1]   # "MBA." -> "MBA", but leave "B.Sc." alone
         school, location = split_trailing_place(parts[1]) if len(parts) > 1 else ("", "")
         if not school:
             # The qualification and the school are usually on separate lines.
@@ -679,8 +817,8 @@ def parse_education(lines: list[str]) -> list[dict]:
 LANGUAGE_COLUMNS = {"language", "languages", "written", "spoken", "reading", "listening", "speaking",
                     "level", "proficiency", "fluency", "score", "skill", "skills"}
 LANGUAGE_LEVELS = ("mother tongue", "above average", "bilingual", "conversational", "native", "fluent",
-                   "excellent", "advanced", "intermediate", "proficient", "average", "beginner",
-                   "basic", "good", "fair", "poor", "working", "limited")
+                   "fluency", "proficiency", "excellent", "advanced", "intermediate", "proficient",
+                   "average", "beginner", "basic", "good", "fair", "poor", "working", "limited")
 
 
 SKILL_HEADINGS = ("skills", "key skills", "technical skills", "core competencies", "core competence",
@@ -710,19 +848,29 @@ def skills_from_lines(lines: list[str]) -> list[str]:
                     value = f"{value.rstrip()} {following}"
             for piece in re.split(r"[,;]", value):
                 piece = clean_cv_line(piece)
-                if 2 < len(piece) <= 60:
+                if 2 < len(piece) <= 120:
                     found.append(piece)
             continue
         if len(clean) > 60 or heading_key(clean) not in headings:
             continue
-        for extra in lines[index + 1:index + 9]:
+        current = ""
+        for extra in lines[index + 1:index + 16]:
+            if heading_key(clean_cv_line(extra)) in breaks:
+                break
             marker = BULLET_RE.match(extra.strip())
             value = clean_cv_line(marker.group(1) if marker else extra)
             if not value:
                 continue
-            if len(value) > 60 or heading_key(value) in breaks:
-                break
-            found.append(value)
+            if marker:
+                if current:
+                    found.append(current)
+                current = value
+            elif current:
+                current = clean_cv_line(f"{current} {value}")   # a bullet that wrapped
+            else:
+                current = value
+        if current:
+            found.append(current)
     return normalize_skills(found)
 
 
@@ -747,6 +895,9 @@ def language_entry(clean: str) -> str:
             level = single
             break
     if level:
+        # "English: Oral and writing proficiency" — the level is prose, keep it whole.
+        if words and words[0].lower().strip(".,;:()[]") != level:
+            return f"{name} — {rest[:60]}"
         return f"{name} — {level}"
     return name if not rest else ""
 
@@ -764,12 +915,13 @@ def parse_languages(lines: list[str]) -> list[str]:
                 inline.append(entry)
     if inline:
         return normalize_skills(inline)
-    start = section_index(lines, LANGUAGE_HEADINGS)
-    if start is None:
+    found = section_start(lines, LANGUAGE_HEADINGS)
+    if not found:
         return []
+    start, remainder = found
     end = section_index(lines, SECTION_BREAKS, start + 1) or len(lines)
     entries: list[str] = []
-    head = re.sub(r"^\s*languages?\s*[:|·-]?\s*", "", lines[start], flags=re.I)
+    head = remainder or re.sub(r"^\s*languages?\s*[:|·-]?\s*", "", lines[start], flags=re.I)
     for line in [head, *lines[start + 1:end]]:
         entry = language_entry(clean_cv_line(line))
         if entry:

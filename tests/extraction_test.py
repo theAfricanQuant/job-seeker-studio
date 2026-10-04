@@ -56,11 +56,27 @@ NO_NAME_CASES = [
 
 EXPERIENCE_CASES = [
     (
-        'a role dated "2007-Date", bullet glyphs, and the country on its own line',
+        "a role dated \"2007-Date\", bullet glyphs, and the country on its own line",
         "Priya Raman\n\nWork Experience\n2007-Date   SENIOR Engineer: Acme Works, Frankfurt,\n            Germany\n            \u25cf Maintenance of laboratory equipment;\n            \u25cf Calibration of new and old equipment;\n2001-2005   Other Company, Berlin\n            \u25cf Publishing quarterly newsletters;\n",
         "SENIOR Engineer",
         "2007-Date",
         "Acme Works",
+        2,
+    ),
+    (
+        "a two-column CV: the heading shares its line, dates sit in a left column, border glyphs",
+        "Ene Example\n\nWork Experience   Africa Partnerships Energy Coordinator|\n"
+        "GIZ - GET.transform Germany\n11/2022 - till date\n"
+        "\u2022 Responsibility for African Partnerships in the Renewable Energy Sector\n"
+        "10/2020 - 10/2022\n"
+        "\u2022 Coordination of GIZ support to the African School of Reg-\nulation\n"
+        "Head of Component Solar Electrification & Market Development|\n"
+        "GIZ (1700 + G300) - Energy Programme Ethiopia\n"
+        "\u2022 Implementation responsibility for EnDev's biggest component\n",
+        "Africa Partnerships Energy Coordinator",
+        "11/2022 - till date",
+        "GIZ - GET.transform Germany",
+        2,
         2,
     ),
 ]
@@ -75,6 +91,12 @@ LANGUAGE_CASES = [
         "languages as a list",
         "Priya Raman\n\nLanguages: English (fluent), German (basic)\n",
         ["English — fluent", "German — basic"],
+    ),
+    (
+        "a language block whose heading shares its line",
+        "Ene Example\n\nLanguages   English: Oral and writing proficiency\nGerman: Basic\n"
+        "Other relevant information (e.g., Publications):\nGEISSLER, S (2018): Transition to-\n",
+        ["English — Oral and writing proficiency", "German — basic"],
     ),
 ]
 
@@ -116,11 +138,15 @@ def main() -> None:
         if name:
             failures.append(f"{label}: invented the name {name!r}")
 
-    for label, body, expected_title, expected_dates, expected_org, expected_bullets in EXPERIENCE_CASES:
+    for case in EXPERIENCE_CASES:
+        label, body, expected_title, expected_dates, expected_org, expected_bullets = case[:6]
+        expected_roles = case[6] if len(case) > 6 else None
         records = app.parse_work_experience(app.cv_lines(body))
         if not records:
             failures.append(f"{label}: no role was read")
             continue
+        if expected_roles is not None and len(records) != expected_roles:
+            failures.append(f"{label}: read {len(records)} roles, expected {expected_roles}")
         first = records[0]
         if first["title"] != expected_title or first["dates"] != expected_dates or first["subtitle"] != expected_org or len(first["bullets"]) != expected_bullets:
             failures.append(
