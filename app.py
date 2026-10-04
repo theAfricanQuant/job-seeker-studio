@@ -1351,6 +1351,13 @@ def job_requirements(job: dict) -> list[str]:
     return requirements[:10]
 
 
+def evidence_anchor(text: str, requirement: str) -> bool:
+    """Conservative lexical guard against a confident but unsupported semantic match."""
+    words = {word for word in re.findall(r"[a-z]{5,}", requirement.lower()) if word not in {"about", "their", "these", "those"}}
+    evidence_words = set(re.findall(r"[a-z]{5,}", text.lower()))
+    return any(left == right or left[:5] == right[:5] for left in words for right in evidence_words)
+
+
 def ai_tailored_evidence(profile: dict, job: dict) -> tuple[dict, dict]:
     """Use Jev to select existing evidence for requirements; code assembles the CV."""
     terms = job_requirements(job)
@@ -1369,7 +1376,7 @@ def ai_tailored_evidence(profile: dict, job: dict) -> tuple[dict, dict]:
             {"requirement": term, "job_title": job.get("title", ""), "candidate_evidence": evidence},
         )
         chosen = evidence_by_id.get(choice)
-        has_anchor = bool(chosen and relevance_score(chosen["text"] + " " + chosen["record"], [term]) > 0)
+        has_anchor = bool(chosen and evidence_anchor(chosen["text"] + " " + chosen["record"], term))
         if chosen and confidence >= 0.45 and has_anchor:
             selected.setdefault(term, []).append(choice)
     selected_ids = {item_id for values in selected.values() for item_id in values}
