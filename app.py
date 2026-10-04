@@ -701,7 +701,14 @@ def skills_from_lines(lines: list[str]) -> list[str]:
         clean = clean_cv_line(line)
         labelled = SKILL_LABELS.match(clean)
         if labelled:
-            for piece in re.split(r"[,;]", labelled.group(1)):
+            value = labelled.group(1)
+            # A wrapped line continues the last item: "… Adapting technology to" / "meet objectives."
+            if not value.rstrip().endswith((".", ";")) and index + 1 < len(lines):
+                following = clean_cv_line(lines[index + 1])
+                starts_lower = bool(following) and following[:1].islower()
+                if starts_lower and len(following) <= 60 and ":" not in following and heading_key(following) not in breaks | headings | {heading_key(name) for name in EXPERIENCE_HEADINGS + EDUCATION_HEADINGS}:
+                    value = f"{value.rstrip()} {following}"
+            for piece in re.split(r"[,;]", value):
                 piece = clean_cv_line(piece)
                 if 2 < len(piece) <= 60:
                     found.append(piece)
