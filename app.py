@@ -498,15 +498,15 @@ def heading_key(line: str) -> str:
 EXPERIENCE_HEADINGS = (
     "work experience", "professional experience", "employment experience", "experience",
     "employment history", "career history", "work history", "professional background",
-    "relevant experience", "regional/international experience",
+    "relevant experience", "related professional experience", "regional/international experience",
 )
 EDUCATION_HEADINGS = (
     "academic background", "acad. background", "education", "education and training",
-    "academic qualifications", "academic record", "qualifications",
+    "academic qualifications", "academic record", "education & certifications", "qualifications",
 )
 LANGUAGE_HEADINGS = ("languages", "language skills", "language proficiency", "spoken languages")
 SECTION_BREAKS = (
-    "academic background", "acad. background", "education", "education and training", "languages",
+    "academic background", "acad. background", "education", "education and training", "education & certifications", "languages",
     "language skills", "language proficiency", "certifications", "certificates", "publications",
     "projects", "interests", "hobbies", "references", "core competencies", "core competence", "skills",
     "key skills", "key qualifications", "profile", "summary", "awards", "training", "courses",
@@ -605,6 +605,9 @@ def strip_work_mode(value: str) -> str:
 def split_role_header(header: str, date_pattern: re.Pattern) -> tuple[str, str, str]:
     """Split "Title — Organisation, City (2022 – Present)" into title, organisation and location."""
     text = strip_work_mode(re.sub(r"\(\s*\)|\[\s*\]", " ", date_pattern.sub(" ", header)))
+    # Date-led entries often write "2017-Date: Employer — Role". Removing the date must
+    # also remove its separator, otherwise the empty text before ':' becomes the title.
+    text = re.sub(r"^\s*[:|·–—-]+\s*", "", text)
     organisation = location = ""
     # A bracket that is not a date carries the organisation: "Title (Organisation, City)" —
     # but only when no separator ("|", "—", ":") already split title from organisation.
@@ -626,6 +629,30 @@ def split_role_header(header: str, date_pattern: re.Pattern) -> tuple[str, str, 
         organisation = clean_cv_line(parts[1]) if len(parts) > 1 else ""
     organisation, location = split_trailing_place(organisation)
     return strip_work_mode(title), organisation, strip_work_mode(location)
+
+
+# A frequent Nigerian and international-CV convention is: "Dates: Employer, place — Role".
+# Swap only when the right-hand side clearly starts like a role and the left can safely be
+# split into an employer plus place. Ordinary "Role — Employer" headers remain untouched.
+EMPLOYER_FIRST_ROLE = re.compile(
+    r"^(?:assistant|associate|campus|chief|coordinator|data|director|electrical|engineer|head|"
+    r"lead|manager|officer|principal|project|programme|program|senior|specialist)\b",
+    re.I,
+)
+ROLE_CONTINUATION = re.compile(
+    r"^(?:advisor|analyst|architect|associate|coordinator|consultant|director|engineer|"
+    r"i{1,3}|manager|officer|scientist|specialist|supervisor|technician)\b",
+    re.I,
+)
+
+
+def correct_employer_first_header(title: str, organisation: str, location: str) -> tuple[str, str, str]:
+    if not title or not organisation or EMPLOYER_FIRST_ROLE.search(title) or not EMPLOYER_FIRST_ROLE.search(organisation):
+        return title, organisation, location
+    employer, inferred_location = split_trailing_place(title)
+    if not inferred_location:
+        return title, organisation, location
+    return organisation, employer, location or inferred_location
 
 
 def looks_like_place(line: str) -> bool:
@@ -709,9 +736,9 @@ def parse_work_experience(lines: list[str]) -> list[dict]:
         return bullets[:7]
 
     # Some two-column PDFs put the first role on the same line as the section heading.
-    lead_raw = lines[start]
-    for name in EXPERIENCE_HEADINGS:
-        lead_raw = re.sub(re.escape(name), " ", lead_raw, flags=re.I)
+    # An exact heading has no lead role. In particular, stripping "professional experience"
+    # from "RELATED PROFESSIONAL EXPERIENCE" must not turn "RELATED" into a job title.
+    lead_raw = remainder
     lead_title, lead_org, lead_location = split_role_header(lead_raw.strip(" |·-"), date_pattern)
     consumed: set[int] = set()
     if lead_title:
@@ -776,6 +803,16 @@ def parse_work_experience(lines: list[str]) -> list[dict]:
                 break
             previous_raw = segment[cursor - 1].strip()
             wraps = following_line[:1].islower() or bool(re.search(r"[|│&,–—/]\s*$|\b(?:and|of|the|in|for|with|to|by|at)\s*$", previous_raw, re.I))
+            # In "Dates: Employer — Principal Electrical" / "Engineer", the role's
+            # final word sits alone on the next line. Keep that compact role-word line
+            # with the header, rather than feeding it to the bullet reader.
+            date_led_employer_first = (
+                header_index == 0
+                and bool(date_pattern.search(segment[0]))
+                and bool(re.search(r"[–—]\s*\S", segment[0]))
+            )
+            if date_led_employer_first and ROLE_CONTINUATION.match(following_line):
+                wraps = True
             if not wraps and (
                 not bordered_header                      # a title cell that spans lines
                 or len(" ".join(header_lines)) >= 140
@@ -785,6 +822,7 @@ def parse_work_experience(lines: list[str]) -> list[dict]:
             header_lines.append(segment[cursor])
             cursor += 1
         title, organisation, location = split_role_header(clean_cv_line(" ".join(header_lines)), date_pattern)
+        title, organisation, location = correct_employer_first_header(title, organisation, location)
         if header_index == 0 and (not title or not organisation) and begin > 0:
             previous = chunk[begin - 1]
             if not date_pattern.search(previous) and not BULLET_RE.match(previous.strip()) and len(clean_cv_line(previous)) <= 120:

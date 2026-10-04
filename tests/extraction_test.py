@@ -56,6 +56,30 @@ NO_NAME_CASES = [
 
 EXPERIENCE_CASES = [
     (
+        "a date-led employer-first header whose role wraps onto the next line",
+        "Priya Raman\n\nProfessional Experience\n"
+        "2007-2018: Research Institute, Vom, Nigeria – Principal Electrical\n"
+        "Engineer\n• Led laboratory maintenance work.\n",
+        "Principal Electrical Engineer",
+        "2007-2018",
+        "Research Institute",
+        1,
+    ),
+    (
+        "a related-professional-experience heading with employer-first role headers",
+        "Ricky Example\n\nRELATED PROFESSIONAL EXPERIENCE\n"
+        "2017-Date: Example Energy Ltd., FCT Nigeria – Data Scientist/Energy Manager\n"
+        "• Built solar-load models for client sites.\n"
+        "2007-2018: National Research Institute, Vom, Nigeria – Principal Electrical Engineer\n"
+        "• Led laboratory maintenance work.\n"
+        "EDUCATION & CERTIFICATIONS\nBachelor of Engineering\n",
+        "Data Scientist/Energy Manager",
+        "2017-Date",
+        "Example Energy Ltd.",
+        1,
+        2,
+    ),
+    (
         "a role dated \"2007-Date\", bullet glyphs, and the country on its own line",
         "Priya Raman\n\nWork Experience\n2007-Date   SENIOR Engineer: Acme Works, Frankfurt,\n            Germany\n            \u25cf Maintenance of laboratory equipment;\n            \u25cf Calibration of new and old equipment;\n2001-2005   Other Company, Berlin\n            \u25cf Publishing quarterly newsletters;\n",
         "SENIOR Engineer",
