@@ -1316,8 +1316,94 @@ def fallback_experience(profile: dict) -> list[dict]:
     return [{"title": "Approved career evidence", "subtitle": "Review and structure before sending", "dates": "", "location": "", "bullets": evidence[:8]}]
 
 
+_TAILORING_CACHE: dict[str, tuple[dict, dict]] = {}
+
+
+def candidate_evidence(profile: dict) -> list[dict]:
+    """Flatten only candidate-approved facts into selectable evidence units."""
+    evidence: list[dict] = []
+    for section in ("experiences", "projects"):
+        for record_index, record in enumerate(profile.get(section, []) or []):
+            label = " | ".join(value for value in (record.get("title"), record.get("subtitle")) if value) or "Approved experience"
+            for bullet_index, bullet in enumerate(record.get("bullets", []) or []):
+                text = str(bullet).strip()
+                if text:
+                    evidence.append({"id": f"e{len(evidence)}", "section": section, "record": label, "text": text})
+    return evidence[:32]
+
+
+def job_requirements(job: dict) -> list[str]:
+    """Build a small, human-readable shortlist before Jev reranks candidate evidence."""
+    title = re.sub(r"\b(junior|senior|lead|principal|chief|head)\b", " ", str(job.get("title", "")), flags=re.I)
+    chunks = re.split(r"\s+(?:and|&|at)\s+|\s*[-–—/]\s*|\s*\([^)]*\)", title, flags=re.I)
+    raw = [chunk.strip(" ,") for chunk in chunks if len(chunk.strip(" ,")) > 2]
+    raw.extend(str(value).strip() for value in job.get("keywords", []) if str(value).strip())
+    first = listing_phrase(job.get("summary"), limit=120)
+    if first:
+        raw.append(first)
+    stop = {"the", "this", "that", "with", "from", "your", "role", "work", "team", "remote", "and", "for", "are", "job", "our"}
+    requirements: list[str] = []
+    for value in raw:
+        value = re.sub(r"\s+", " ", value).strip()
+        if not value or value.lower() in stop or value.lower() in {item.lower() for item in requirements}:
+            continue
+        requirements.append(value)
+    return requirements[:10]
+
+
+def ai_tailored_evidence(profile: dict, job: dict) -> tuple[dict, dict]:
+    """Use Jev to select existing evidence for requirements; code assembles the CV."""
+    terms = job_requirements(job)
+    evidence = candidate_evidence(profile)
+    if not terms or not evidence or ai_reader is None or not ai_reader.enabled():
+        raise RuntimeError("AI evidence matching is unavailable")
+    selected: dict[str, list[str]] = {}
+    evidence_by_id = {item["id"]: item for item in evidence}
+    for term in terms:
+        criteria = {item["id"]: f"Use this exact candidate evidence: {item['text']}" for item in evidence}
+        criteria["none"] = "No candidate evidence supports this requirement; do not claim it."
+        choice, confidence = ai_reader._ask(
+            "Which single candidate-approved evidence item best supports this job requirement? Choose none if no item supports it. "
+            "Do not infer a skill or achievement that is not stated in the evidence.",
+            criteria,
+            {"requirement": term, "job_title": job.get("title", ""), "candidate_evidence": evidence},
+        )
+        if choice in evidence_by_id and confidence >= 0.45:
+            selected.setdefault(term, []).append(choice)
+    selected_ids = {item_id for values in selected.values() for item_id in values}
+    tailored = {**profile}
+    tailored["skills"] = [skill for skill in (profile.get("skills", []) or []) if any(relevance_score(skill, [term]) for term in terms)] or list(profile.get("skills", []) or [])
+    tailored["experiences"] = []
+    for record in profile.get("experiences", []) or []:
+        copied = {**record, "bullets": [bullet for bullet in record.get("bullets", []) if any(item["text"] == bullet and item["id"] in selected_ids for item in evidence)]}
+        if copied["bullets"]:
+            tailored["experiences"].append(copied)
+    for record in profile.get("experiences", []) or []:
+        if record not in tailored["experiences"]:
+            tailored["experiences"].append({**record, "bullets": []})
+    matched_terms = [term for term in terms if term in selected]
+    evidence_map = [{"requirement": term, "evidence": [evidence_by_id[item_id]["text"] for item_id in ids]} for term, ids in selected.items()]
+    return tailored, {
+        "matched_terms": matched_terms,
+        "foregrounded_evidence": [evidence_by_id[item_id]["record"] for item_id in selected_ids],
+        "unverified_terms": [term for term in terms if term not in selected],
+        "evidence_map": evidence_map,
+        "mode": "AI evidence matching over candidate-approved facts; document structure and wording are assembled in code.",
+    }
+
+
 def tailored_evidence(profile: dict, job: dict) -> tuple[dict, dict]:
-    """Reorder reviewed facts by job vocabulary; do not rewrite or invent any facts."""
+    """Select or reorder reviewed facts by job vocabulary; never invent facts."""
+    cache_key = hashlib.sha256(json.dumps({"profile": profile, "job": job}, sort_keys=True, default=str).encode()).hexdigest()
+    if cache_key in _TAILORING_CACHE:
+        return _TAILORING_CACHE[cache_key]
+    if ai_reader is not None and ai_reader.enabled():
+        try:
+            result = ai_tailored_evidence(profile, job)
+            _TAILORING_CACHE[cache_key] = result
+            return result
+        except Exception as error:
+            print(f"[Field Notes] AI evidence matching fell back to rules: {error}")
     terms = role_terms(job)
     experiences = profile.get("experiences", []) or fallback_experience(profile)
     ordered_experiences = []
@@ -1422,10 +1508,19 @@ def listing_phrase(summary: object, limit: int = 170) -> str:
     return sentence
 
 
+def cover_evidence(profile: dict, job: dict) -> list[str]:
+    tailored, _ = tailored_evidence(profile, job)
+    bullets = [str(bullet).strip() for record in tailored.get("experiences", []) for bullet in record.get("bullets", []) if str(bullet).strip()]
+    return list(dict.fromkeys(bullets))[:2]
+
+
 def cover_typst(profile: dict, job: dict) -> str:
-    name = typst_escape(profile.get("name") or "Candidate")
-    contact = " · ".join(filter(None, [profile.get("email"), profile.get("phone")])) or "Contact details to be confirmed"
-    skills = ", ".join(profile.get("skills", [])[:5]) or "the verified skills in my profile"
+    tailored, _ = tailored_evidence(profile, job)
+    name = typst_escape(tailored.get("name") or "Candidate")
+    contact = " · ".join(filter(None, [tailored.get("email"), tailored.get("phone")])) or "Contact details to be confirmed"
+    skills = ", ".join(tailored.get("skills", [])[:5]) or "the verified skills in my profile"
+    evidence = cover_evidence(profile, job)
+    evidence_text = " ".join(typst_escape(item) for item in evidence) or "I would welcome the opportunity to discuss the evidence in my application."
     return f'''#set page(paper: "a4", margin: (x: 22mm, y: 20mm))
 #set text(font: "DejaVu Sans", size: 10.5pt)
 #set par(leading: 0.85em)
@@ -1440,9 +1535,9 @@ def cover_typst(profile: dict, job: dict) -> str:
 #v(18pt)
 Dear hiring team,
 
-I am applying for the *{typst_escape(job['title'])}* role at *{typst_escape(job['company'])}*. My approved profile highlights experience and capabilities in {typst_escape(skills)}. Your listing describes the work as: *{typst_escape(listing_phrase(job.get('summary')))}* I would welcome the chance to discuss how my experience fits it.
+I am applying for the *{typst_escape(job['title'])}* role at *{typst_escape(job['company'])}*. My approved profile includes {typst_escape(skills)}. Relevant evidence from my experience includes: {evidence_text}
 
-This letter is intentionally a truthful starting draft. Before sending it, I will review the wording, add only specific evidence I can substantiate, and make sure it reflects my own voice.
+Your listing describes the work as: *{typst_escape(listing_phrase(job.get('summary')))}* I would welcome the chance to discuss how this evidence fits the role. The statements above are drawn from my approved candidate record and should be reviewed before sending.
 
 Thank you for considering my application.
 
@@ -1567,19 +1662,23 @@ def cv_docx(profile: dict, job: dict, output: Path) -> dict:
 
 
 def cover_docx(profile: dict, job: dict, output: Path) -> None:
+    tailored, _ = tailored_evidence(profile, job)
     title = f"Cover Letter for {job['title']} at {job['company']}"
-    contact = " | ".join(filter(None, [profile.get("email"), profile.get("phone"), profile.get("location")]))
-    skills = ", ".join(profile.get("skills", [])[:5]) or "the verified skills in my profile"
-    paragraphs = [word_paragraph(title, style="Title", centered=True), word_paragraph(profile.get("name") or "Candidate", style="Subtitle", centered=True)]
+    contact = " | ".join(filter(None, [tailored.get("email"), tailored.get("phone"), tailored.get("location")]))
+    skills = ", ".join(tailored.get("skills", [])[:5]) or "the verified skills in my profile"
+    evidence = cover_evidence(profile, job)
+    evidence_text = " ".join(evidence) or "I would welcome the opportunity to discuss the evidence in my application."
+    paragraphs = [word_paragraph(title, style="Title", centered=True), word_paragraph(tailored.get("name") or "Candidate", style="Subtitle", centered=True)]
     if contact:
         paragraphs.append(word_paragraph(contact, style="Meta", centered=True))
     paragraphs.extend([
         word_paragraph(f"{job['company']}\n{job['location']}"),
         word_paragraph("Dear hiring team,"),
-        word_paragraph(f"I am applying for the {job['title']} role at {job['company']}. My approved profile highlights experience and capabilities in {skills}. Your listing describes the work as: {listing_phrase(job.get('summary'))} I would welcome the chance to discuss how my experience fits it."),
-        word_paragraph("This letter is a truthful starting draft. Before sending it, I will review the wording, add only specific evidence I can substantiate, and make sure it reflects my own voice."),
+        word_paragraph(f"I am applying for the {job['title']} role at {job['company']}. My approved profile includes {skills}. Relevant evidence from my experience includes: {evidence_text}"),
+        word_paragraph(f"Your listing describes the work as: {listing_phrase(job.get('summary'))} I would welcome the chance to discuss how this evidence fits the role. The statements above are drawn from my approved candidate record and should be reviewed before sending."),
+        word_paragraph("Thank you for considering my application."),
         word_paragraph("Sincerely,"),
-        word_paragraph(profile.get("name") or "Candidate"),
+        word_paragraph(tailored.get("name") or "Candidate"),
     ])
     write_docx(output, paragraphs, title)
 
