@@ -21,6 +21,18 @@ TEXT_CASES = [
     ("name with particles", "Maria de la Cruz Fernandez\nMadrid, Spain\n", "Maria de la Cruz Fernandez", "Madrid, Spain"),
     ("three-part name", "Ene Sandra Macharm\nOberursel, Germany\n", "Ene Sandra Macharm", "Oberursel, Germany"),
     ("city and country", "Tiku Allu\ntiku@example.com | +234 803 555 0199\nAbuja, Nigeria\n", "Tiku Allu", "Abuja, Nigeria"),
+    (
+        "personal data block with a title after the comma",
+        "Personal Data:\nName: Ricky Sambo Macharm, PEM™\nDate of Birth: 27/10/1974\nPlace of Birth: Jos, Nigeria\nNationality: Nigerian\nAddress: Works and maintenance, National Veterinary Research Institute, Vom, Plateau State.\nE-Mail: ricky.macharm@gmail.com\nMobile #: +2347055743990; +2348033866978\n",
+        "Ricky Sambo Macharm",
+        "Vom, Plateau State",
+    ),
+    (
+        "personal data block, title without a comma",
+        "Name: Ricky Sambo Macharm PEM\nNationality: Nigerian\nAddress: Vom, Plateau State\nMobile #: +2347055743990\n",
+        "Ricky Sambo Macharm",
+        "Vom, Plateau State",
+    ),
 ]
 
 NO_NAME_CASES = [

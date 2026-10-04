@@ -257,6 +257,17 @@ NAME_WORD = re.compile(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ.'’\-]*")
 # Lowercase name particles ("Maria de la Cruz", "van der Berg") are still a person.
 NAME_PARTICLES = {"de", "del", "della", "der", "den", "van", "von", "bin", "ibn", "al", "el", "da", "di", "du", "dos", "das", "le", "la", "los", "mac", "mc", "ap", "af", "o"}
 
+# Professional titles that trail a name ("Ricky Sambo Macharm, PEM™") are not the name.
+CREDENTIAL_WORDS = {"pem", "pmp", "mba", "msc", "m.sc", "bsc", "b.sc", "phd", "ph.d", "acca", "cfa", "cpa",
+                    "ceng", "c.eng", "rn", "md", "pgd", "hnd", "ond", "cipm", "mnim", "fca", "ccna", "pmi",
+                    "shrm", "meng", "beng", "ba", "ma", "llb", "llm", "dr", "prof", "eng", "csm", "itil",
+                    "ceh", "cissp", "cfp", "cisa", "cism", "prince2", "six", "sigma"}
+
+# Field labels on a personal-data block must never be read as a name.
+CV_LABEL_WORDS = {"name", "names", "surname", "given", "first", "last", "middle", "address", "email",
+                  "e-mail", "phone", "mobile", "nationality", "date", "place", "birth", "dob", "sex",
+                  "gender", "marital", "status", "contact", "tel", "fax", "website", "linkedin"}
+
 # Section headings and job titles must never be mistaken for a person's name.
 CV_SECTION_WORDS = {
     "curriculum", "vitae", "resume", "cv", "profile", "summary", "objective", "experience",
@@ -309,8 +320,9 @@ COUNTRY_WORDS = (
 
 def name_candidate(line: str) -> str:
     """Return the line when it reads like a person's name, otherwise an empty string."""
-    for piece in (line, re.split(r"[,;]", line)[0]):
-        candidate = re.sub(r"\s+", " ", piece).strip(" ,;:|•·-")
+    for piece in (line, re.split(r"[,;(]", line)[0]):
+        candidate = re.sub(r"[™®©]", "", piece)
+        candidate = re.sub(r"\s+", " ", candidate).strip(" ,;:|•·-")
         if not candidate or not 4 <= len(candidate) <= 70:
             continue
         if any(char.isdigit() for char in candidate) or "http" in candidate.lower():
@@ -318,6 +330,10 @@ def name_candidate(line: str) -> str:
         if any(char in candidate for char in ":|/\\()[]{}<>*&+=%$#"):
             continue
         words = candidate.split()
+        # A trailing credential is a title, not part of the name ("Ricky Sambo Macharm PEM").
+        while len(words) > 2 and (words[-1].lower().strip(".'-") in CREDENTIAL_WORDS or (words[-1].isupper() and 2 <= len(words[-1]) <= 5)):
+            words = words[:-1]
+        candidate = " ".join(words)
         if not 2 <= len(words) <= 5:
             continue
         if not all(NAME_WORD.fullmatch(word) for word in words):
@@ -327,17 +343,24 @@ def name_candidate(line: str) -> str:
         if sum(1 for word in words if word[:1].isupper()) < 2:
             continue
         lowered = {word.lower().strip(".'-") for word in words}
-        if lowered & CV_SECTION_WORDS or lowered & CV_ROLE_WORDS:
+        if lowered & CV_SECTION_WORDS or lowered & CV_ROLE_WORDS or lowered & CV_LABEL_WORDS:
             continue
         return candidate
     return ""
 
 
 def parsed_name(lines: list[str]) -> str:
-    # 1. An explicit label: "Name: Jane Doe".
+    # 1. An explicit label: "Name: Jane Doe". Anything after a comma is a title, not the name.
     for line in lines[:30]:
-        candidate = re.sub(r"^.*?\bName\s*[:\-–]?\s+", "", line, flags=re.I).strip()
-        if candidate != line and re.fullmatch(r"[A-Za-zÀ-ÿ .'-]{4,70}", candidate):
+        candidate = re.sub(r"^.*?\bName\b\s*[:\-–]?\s*", "", line, flags=re.I).strip()
+        if candidate == line:
+            continue
+        candidate = re.split(r"[,;(]", candidate)[0].strip(" .'-")
+        words = candidate.split()
+        while len(words) > 2 and (words[-1].lower().strip(".'-") in CREDENTIAL_WORDS or (words[-1].isupper() and 2 <= len(words[-1]) <= 5)):
+            words = words[:-1]
+        candidate = " ".join(words)
+        if re.fullmatch(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'\-]{2,69}", candidate):
             return candidate
     # 2. A "Curriculum Vitae" heading with the name underneath it.
     for index, line in enumerate(lines[:15]):
@@ -371,12 +394,17 @@ def parsed_location(lines: list[str]) -> str:
     for line in lines[:35]:
         labelled = re.match(r"^(?:address|location|based in|residence|city)\s*[:|\-]\s*(.+)$", line, re.I)
         if labelled and len(labelled.group(1).strip()) <= 120:
-            return clean_location(labelled.group(1).strip())
+            value = clean_location(labelled.group(1).strip()).strip(" .,;·|-")
+            pieces = [piece.strip() for piece in value.split(",") if piece.strip()]
+            # A full postal address is not a useful location: keep the town and region.
+            if len(pieces) >= 3 and not any(char.isdigit() for char in pieces[-1]):
+                value = ", ".join(pieces[-2:])
+            return value
     for line in lines[:25]:
         if len(line) > 160:
             continue
         for piece in re.split(r"[|·•]", line):
-            value = clean_location(piece)
+            value = re.sub(r"^[A-Za-z][A-Za-z #/()'-]{1,26}:\s*", "", clean_location(piece))
             if not 3 <= len(value) <= 60 or "@" in value or any(char.isdigit() for char in value):
                 continue
             lowered = value.lower()
@@ -612,7 +640,11 @@ def profile_from_text(text: str, uploaded_file: str, workspace_token: str) -> di
         if re.search(r"(?<!\w)" + re.escape(key) + r"(?!\w)", lower) and label not in skills:
             skills.append(label)
     experiences = parse_work_experience(lines)
-    headline = experiences[0]["title"] if experiences else next((line for line in lines if len(line) < 150 and any(word in line.lower() for word in ["analyst", "scientist", "engineer", "research", "manager", "coordinator", "advisor"])), "")
+    if experiences:
+        headline = experiences[0]["title"]
+    else:
+        # Fall back to a line that reads like a job title — never a labelled field or an address.
+        headline = next((line for line in lines if 4 < len(line) < 80 and ":" not in line and not any(char.isdigit() for char in line) and not {word.lower().strip(".,") for word in line.split()} & CV_LABEL_WORDS and any(word in line.lower() for word in ("analyst", "scientist", "engineer", "research", "manager", "coordinator", "advisor", "consultant", "specialist", "developer", "officer", "lead", "teacher", "lecturer", "nurse", "accountant"))), "")
     key_start = next((index for index, line in enumerate(lines) if "key qualifications" in line.lower()), None)
     if key_start is not None:
         skills.extend(clean_cv_line(line) for line in lines[key_start + 1:key_start + 10] if clean_cv_line(line))
