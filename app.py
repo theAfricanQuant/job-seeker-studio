@@ -14,6 +14,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import zipfile
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -140,6 +141,22 @@ def ensure_workspace(token: str) -> Path:
     for folder in (root, workspace_uploads(token), workspace_documents(token)):
         folder.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def reset_workspace(old_token: str) -> tuple[str, dict[str, str]]:
+    """Delete every file for this browser workspace and issue a fresh identity."""
+    root = workspace_root(old_token)
+    if root.is_dir() and root.parent.resolve() == WORKSPACES_ROOT.resolve():
+        shutil.rmtree(root)
+    if ai_reader is not None:
+        cache = getattr(ai_reader, "_cache", None)
+        if isinstance(cache, dict):
+            with getattr(ai_reader, "_cache_lock", threading.Lock()):
+                cache.clear()
+    _TAILORING_CACHE.clear()
+    new_token = new_workspace_token()
+    ensure_workspace(new_token)
+    return new_token, {"Set-Cookie": workspace_cookie(new_token)}
 
 
 def read_profile(token: str) -> dict:
@@ -1875,6 +1892,9 @@ class FieldNotesHandler(SimpleHTTPRequestHandler):
                 message = ("CV read — a language model helped label the tricky lines. Check every field before you go on."
                            if used_ai else "CV read. Review the extracted profile before generating documents.")
                 return self.send_json({"profile": profile, "reader": "ai" if used_ai else "rules", "message": message}, headers=headers)
+            if path == "/api/reset":
+                new_token, reset_headers = reset_workspace(token)
+                return self.send_json({"reset": True, "profile": empty_profile(), "message": "Everything has been reset. This workspace contains no previous CV, jobs or documents."}, headers=reset_headers)
             if path == "/api/profile":
                 return self.send_json({"profile": write_profile(body, token), "message": "Profile saved in this browser workspace."}, headers=headers)
             if path == "/api/generate":
