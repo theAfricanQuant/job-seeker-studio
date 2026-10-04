@@ -40,6 +40,14 @@ CV_STUDIO_RUNTIME = APP_ROOT / "cv_studio_runtime"
 PROFILE_FILE = DATA_ROOT / "profile.json"
 JOB_CACHE_FILE = DATA_ROOT / "job_matches.json"
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+# A photo or a scan carries no text layer: the reader cannot see it, and we say so plainly
+# instead of handing back a half-empty profile.
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".tif", ".tiff", ".bmp", ".heic", ".heif"}
+MIN_USEFUL_WORDS = 12
+SCAN_MESSAGE = ("This looks like a scan or a photo of your CV. There is no OCR here, so we cannot read the words in it. "
+                "Upload the file your word processor made — PDF, DOCX, TXT or Markdown — and we will read that. "
+                "Reading scans is on the list for the paid version.")
+EMPTY_MESSAGE = "This file holds no readable text. Upload the CV document itself, not a picture of it."
 JOBICY_ENDPOINT = "https://jobicy.com/api/v2/remote-jobs"
 FREEHIRE_ENDPOINT = "https://freehire.me/api/v1/jobs/search"
 WORKSPACE_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -274,6 +282,11 @@ def raw_extract_text(path: Path) -> str:
     if extension in {".txt", ".md"}:
         return path.read_text(encoding="utf-8", errors="replace")
     raise ValueError("Use a PDF, DOCX, TXT, or Markdown CV.")
+
+
+def looks_like_scan(path: Path, text: str) -> bool:
+    """A PDF whose pages carry no text layer — a scan of a printed CV."""
+    return path.suffix.lower() == ".pdf" and len(re.findall(r"[A-Za-z]{2,}", text)) < MIN_USEFUL_WORDS
 
 
 def cv_lines(text: str) -> list[str]:
@@ -1720,7 +1733,13 @@ class FieldNotesHandler(SimpleHTTPRequestHandler):
                     raise ValueError("Use a non-empty CV smaller than 8 MB.")
                 destination = workspace_uploads(token) / (datetime.now().strftime("%Y%m%d-%H%M%S-") + name)
                 destination.write_bytes(content)
+                if destination.suffix.lower() in IMAGE_EXTENSIONS:
+                    return self.send_json({"scan": True, "message": SCAN_MESSAGE}, headers=headers)
                 text = extract_text(destination)
+                if looks_like_scan(destination, text):
+                    return self.send_json({"scan": True, "message": SCAN_MESSAGE}, headers=headers)
+                if len(re.findall(r"[A-Za-z]{2,}", text)) < MIN_USEFUL_WORDS:
+                    return self.send_json({"scan": True, "message": EMPTY_MESSAGE}, headers=headers)
                 if ai_reader is not None and ai_reader.enabled():
                     profile, notes = ai_hybrid_profile(text, name, token)
                 else:
