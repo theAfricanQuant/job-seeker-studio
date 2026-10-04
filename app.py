@@ -252,37 +252,245 @@ def cv_lines(text: str) -> list[str]:
     return [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip() and not re.match(r"^(Page \| \d+|.+@.+)$", line.strip())]
 
 
+NAME_WORD = re.compile(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ.'’\-]*")
+
+# Lowercase name particles ("Maria de la Cruz", "van der Berg") are still a person.
+NAME_PARTICLES = {"de", "del", "della", "der", "den", "van", "von", "bin", "ibn", "al", "el", "da", "di", "du", "dos", "das", "le", "la", "los", "mac", "mc", "ap", "af", "o"}
+
+# Section headings and job titles must never be mistaken for a person's name.
+CV_SECTION_WORDS = {
+    "curriculum", "vitae", "resume", "cv", "profile", "summary", "objective", "experience",
+    "employment", "history", "education", "academic", "background", "skills", "skill",
+    "qualifications", "languages", "language", "certifications", "certificates", "projects",
+    "interests", "references", "contact", "details", "personal", "professional", "key",
+    "other", "relevant", "about", "achievements", "awards", "publications", "training",
+    "courses", "volunteering",
+}
+
+CV_ROLE_WORDS = {
+    "senior", "junior", "lead", "head", "chief", "principal", "staff", "associate", "assistant",
+    "deputy", "executive", "officer", "manager", "management", "director", "engineer",
+    "engineering", "developer", "programmer", "architect", "scientist", "analyst", "analytics",
+    "consultant", "consulting", "advisor", "adviser", "specialist", "coordinator",
+    "administrator", "researcher", "research", "intern", "trainee", "graduate", "student",
+    "teacher", "lecturer", "professor", "tutor", "designer", "technician", "accountant",
+    "auditor", "lawyer", "attorney", "nurse", "doctor", "pharmacist", "driver", "marketer",
+    "sales", "marketing", "product", "project", "program", "programme", "business", "finance",
+    "financial", "software", "data", "machine", "learning", "science", "quantitative", "quant",
+    "risk", "portfolio", "investment", "banking", "energy", "climate", "policy", "strategy",
+    "operations", "logistics", "human", "resources", "recruiter", "communications", "writer",
+    "editor", "photographer", "artist", "chef", "welder", "electrician", "plumber", "mechanic",
+    "supervisor", "foreman", "fitter", "operator", "midwife", "physician", "surgeon", "dentist",
+    "psychologist", "counselor", "counsellor", "social", "worker", "trainer", "instructor",
+    "coach", "freelance", "remote", "available", "open",
+}
+
+COUNTRY_WORDS = (
+    "nigeria", "germany", "ghana", "kenya", "south africa", "tanzania", "uganda", "rwanda",
+    "ethiopia", "senegal", "cameroon", "ivory coast", "côte d'ivoire", "benin", "togo", "mali",
+    "zambia", "zimbabwe", "botswana", "namibia", "malawi", "mozambique", "egypt", "morocco",
+    "tunisia", "algeria", "libya", "sudan", "somalia", "eritrea", "liberia", "sierra leone",
+    "gambia", "guinea", "burkina faso", "niger", "chad", "gabon", "congo", "angola", "lesotho",
+    "eswatini", "swaziland", "mauritius", "madagascar", "cape verde", "united kingdom", "uk",
+    "england", "scotland", "wales", "ireland", "france", "spain", "portugal", "italy", "greece",
+    "netherlands", "holland", "belgium", "luxembourg", "switzerland", "austria", "denmark",
+    "sweden", "norway", "finland", "iceland", "poland", "czech", "slovakia", "hungary",
+    "romania", "bulgaria", "croatia", "serbia", "slovenia", "bosnia", "albania", "estonia",
+    "latvia", "lithuania", "ukraine", "russia", "turkey", "cyprus", "malta", "usa",
+    "united states", "canada", "mexico", "brazil", "argentina", "chile", "colombia", "peru",
+    "venezuela", "ecuador", "bolivia", "uruguay", "paraguay", "costa rica", "panama", "cuba",
+    "jamaica", "india", "pakistan", "bangladesh", "sri lanka", "nepal", "china", "japan",
+    "korea", "singapore", "malaysia", "indonesia", "philippines", "vietnam", "thailand",
+    "cambodia", "myanmar", "australia", "new zealand", "united arab emirates", "uae", "qatar",
+    "saudi arabia", "kuwait", "bahrain", "oman", "jordan", "lebanon", "israel", "iran", "iraq",
+    "kazakhstan", "europe", "africa", "asia", "north america", "latin america",
+)
+
+
+def name_candidate(line: str) -> str:
+    """Return the line when it reads like a person's name, otherwise an empty string."""
+    for piece in (line, re.split(r"[,;]", line)[0]):
+        candidate = re.sub(r"\s+", " ", piece).strip(" ,;:|•·-")
+        if not candidate or not 4 <= len(candidate) <= 70:
+            continue
+        if any(char.isdigit() for char in candidate) or "http" in candidate.lower():
+            continue
+        if any(char in candidate for char in ":|/\\()[]{}<>*&+=%$#"):
+            continue
+        words = candidate.split()
+        if not 2 <= len(words) <= 5:
+            continue
+        if not all(NAME_WORD.fullmatch(word) for word in words):
+            continue
+        if any(not word[:1].isupper() and word.lower() not in NAME_PARTICLES for word in words):
+            continue
+        if sum(1 for word in words if word[:1].isupper()) < 2:
+            continue
+        lowered = {word.lower().strip(".'-") for word in words}
+        if lowered & CV_SECTION_WORDS or lowered & CV_ROLE_WORDS:
+            continue
+        return candidate
+    return ""
+
+
 def parsed_name(lines: list[str]) -> str:
+    # 1. An explicit label: "Name: Jane Doe".
     for line in lines[:30]:
-        candidate = re.sub(r"^.*?\bName\s+", "", line, flags=re.I).strip()
+        candidate = re.sub(r"^.*?\bName\s*[:\-–]?\s+", "", line, flags=re.I).strip()
         if candidate != line and re.fullmatch(r"[A-Za-zÀ-ÿ .'-]{4,70}", candidate):
             return candidate
+    # 2. A "Curriculum Vitae" heading with the name underneath it.
     for index, line in enumerate(lines[:15]):
-        if line.lower() in {"curriculum", "vitae", "curriculum vitae"} and index + 1 < len(lines):
-            candidate = lines[index + 1]
-            if re.fullmatch(r"[A-Za-zÀ-ÿ .'-]{4,70}", candidate):
+        if line.lower().strip(" :") in {"curriculum", "vitae", "curriculum vitae"} and index + 1 < len(lines):
+            candidate = name_candidate(lines[index + 1])
+            if candidate:
                 return candidate
-    return ""
+    # 3. The common case: the name is simply the first line. Score candidates instead of
+    #    trusting the first match, so a job title on line one is not read as a person.
+    best, best_score = "", 0
+    for index, line in enumerate(lines[:10]):
+        candidate = name_candidate(line)
+        if not candidate:
+            continue
+        score = 3 if index == 0 else (2 if index <= 2 else 1)
+        score += 1 if candidate.isupper() else 0
+        score += 1 if len(candidate.split()) == 2 else 0
+        if score > best_score:
+            best, best_score = candidate, score
+    return best if best_score >= 3 else ""
+
+
+def clean_location(line: str) -> str:
+    """Trim a header line down to the place itself, dropping phones and separators."""
+    value = re.split(r"[·|•]", line)[0]
+    value = re.sub(r"\s*[-–—]?\s*\(?\+?\d[\d ()/-]{6,}\d\)?.*$", "", value)
+    return value.strip(" ,;·|-")
 
 
 def parsed_location(lines: list[str]) -> str:
     for line in lines[:35]:
-        labelled = re.match(r"^(?:address|location|based in|residence)\s*[:|-]\s*(.+)$", line, re.I)
+        labelled = re.match(r"^(?:address|location|based in|residence|city)\s*[:|\-]\s*(.+)$", line, re.I)
         if labelled and len(labelled.group(1).strip()) <= 120:
-            return labelled.group(1).strip()
-    country_words = ("nigeria", "germany", "france", "kenya", "ghana", "south africa", "canada", "united kingdom", "usa", "united states", "europe")
-    return next((line for line in lines[:25] if any(country in line.lower() for country in country_words) and "@" not in line and len(line) <= 120), "")
+            return clean_location(labelled.group(1).strip())
+    for line in lines[:25]:
+        if len(line) > 160:
+            continue
+        for piece in re.split(r"[|·•]", line):
+            value = clean_location(piece)
+            if not 3 <= len(value) <= 60 or "@" in value or any(char.isdigit() for char in value):
+                continue
+            lowered = value.lower()
+            if any(re.search(r"(?<![a-z])" + re.escape(country) + r"(?![a-z])", lowered) for country in COUNTRY_WORDS):
+                return value
+    for line in lines[:15]:
+        head, separator, tail = line.partition(",")
+        if separator and tail.strip().lower().strip(" .") in COUNTRY_WORDS:
+            return clean_location(line)
+    return ""
 
 
 def clean_cv_line(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("│", "|").replace("", "").replace("•", "").strip(" -|•")).strip()
 
 
+def heading_key(line: str) -> str:
+    """Normalise a heading for comparison; also collapses letter-spaced headings."""
+    return re.sub(r"[^a-z&/]", "", line.lower())
+
+
+EXPERIENCE_HEADINGS = (
+    "work experience", "professional experience", "employment experience", "experience",
+    "employment history", "career history", "work history", "professional background",
+    "relevant experience", "regional/international experience",
+)
+EDUCATION_HEADINGS = (
+    "academic background", "acad. background", "education", "education and training",
+    "academic qualifications", "academic record", "qualifications",
+)
+LANGUAGE_HEADINGS = ("languages", "language skills", "language proficiency", "spoken languages")
+SECTION_BREAKS = (
+    "academic background", "acad. background", "education", "education and training", "languages",
+    "language skills", "language proficiency", "certifications", "certificates", "publications",
+    "projects", "interests", "references", "core competencies", "skills", "key skills", "profile",
+    "summary", "awards", "training", "courses", "volunteering", "additional information",
+    "other relevant", "personal details", "contact",
+)
+
+
+def section_index(lines: list[str], names: tuple[str, ...], after: int = 0) -> int | None:
+    """Index of the first heading line naming one of `names`, searched from `after`."""
+    wanted = {heading_key(name) for name in names}
+    for index in range(after, len(lines)):
+        line = lines[index]
+        if len(line) > 60 or re.match(r"^(?:•|o)\s", line.strip(), re.I):
+            continue
+        if heading_key(line) in wanted:
+            return index
+    return None
+
+
+def split_trailing_place(value: str) -> tuple[str, str]:
+    """Peel a trailing "City, Country" off an organisation or school name."""
+    cleaned = re.sub(r"\b([A-Z][\w'’-]*(?:, [A-Z][\w'’-]*)?)\s+\1\b", r"\1", clean_cv_line(value))
+    pieces = [piece.strip() for piece in cleaned.split(",") if piece.strip()]
+    if len(pieces) < 2:
+        return cleaned, ""
+    take = 2 if len(pieces) >= 3 and pieces[-1].lower().strip(".") in COUNTRY_WORDS else 1
+    return clean_cv_line(", ".join(pieces[:-take])), clean_cv_line(", ".join(pieces[-take:]))
+
+
+WORK_MODES = ("hybrid", "remote", "on-site", "onsite", "part-time", "parttime", "full-time", "fulltime",
+              "contract", "permanent", "temporary", "freelance", "internship", "working remotely")
+
+
+def strip_work_mode(value: str) -> str:
+    """Drop a trailing work-mode word ("· Hybrid", "Remote") from a header line."""
+    cleaned = clean_cv_line(value)
+    while cleaned:
+        trimmed = re.sub(r"(?:^|[\s·|,\-]+)(?:" + "|".join(re.escape(mode) for mode in WORK_MODES) + r")\s*$", "", cleaned, flags=re.I).strip(" ,;·|-")
+        if trimmed == cleaned:
+            return cleaned
+        cleaned = trimmed
+    return cleaned
+
+
+def split_role_header(header: str, date_pattern: re.Pattern) -> tuple[str, str, str]:
+    """Split "Title — Organisation, City (2022 – Present)" into title, organisation and location."""
+    text = strip_work_mode(re.sub(r"\(\s*\)|\[\s*\]", " ", date_pattern.sub(" ", header)))
+    organisation = location = ""
+    # A bracket that is not a date carries the organisation: "Title (Organisation, City)".
+    inside = re.search(r"\(([^()]*)\)", text)
+    if inside and inside.group(1).strip():
+        title = clean_cv_line(text[:inside.start()])
+        organisation = clean_cv_line(inside.group(1))
+        trailing = clean_cv_line(text[inside.end():])
+        if trailing:
+            organisation = clean_cv_line(f"{organisation} {trailing}")
+    else:
+        text = re.sub(r"\(\s*\)|\[\s*\]", " ", text)   # the brackets a removed date left behind
+        text = re.sub(r"\)\s*\S+$", "", text)          # text glued after the closing bracket
+        text = re.sub(r"[()\[\]]", " ", text)
+        text = re.sub(r"\s+", " ", text).strip(" -–—·|,.;")
+        parts = re.split(r"\s*[|—–]\s*|\s+-\s+", text, maxsplit=1)
+        title = clean_cv_line(parts[0])
+        organisation = clean_cv_line(parts[1]) if len(parts) > 1 else ""
+    organisation, location = split_trailing_place(organisation)
+    return strip_work_mode(title), organisation, strip_work_mode(location)
+
+
+def looks_like_place(line: str) -> bool:
+    value = clean_cv_line(line)
+    if not 3 <= len(value) <= 40 or any(char.isdigit() for char in value):
+        return False
+    lowered = value.lower()
+    return any(re.search(r"(?<![a-z])" + re.escape(country) + r"(?![a-z])", lowered) for country in COUNTRY_WORDS)
+
+
 def parse_work_experience(lines: list[str]) -> list[dict]:
-    start = next((index for index, line in enumerate(lines) if "work experience" in line.lower()), None)
+    start = section_index(lines, EXPERIENCE_HEADINGS)
     if start is None:
         return []
-    end = next((index for index, line in enumerate(lines[start + 1:], start + 1) if any(marker in line.lower() for marker in ("acad. background", "academic background", "education", "regional/international experience"))), len(lines))
+    end = section_index(lines, SECTION_BREAKS, start + 1) or len(lines)
     chunk = lines[start + 1:end]
     date_pattern = re.compile(r"(?:(?:0?[1-9]|1[0-2])[/.-]\d{4}|\d{4})\s*[–-]\s*(?:(?:0?[1-9]|1[0-2])[/.-]\d{4}|\d{4}|till date|present)", re.I)
     boundaries = [index for index, line in enumerate(chunk) if date_pattern.search(line)]
@@ -293,7 +501,7 @@ def parse_work_experience(lines: list[str]) -> list[dict]:
         current = ""
         for line in segment:
             clean = clean_cv_line(line)
-            if not clean or re.match(r"^Ene Sandra Macharm", clean, re.I):
+            if not clean:
                 continue
             marker = re.match(r"^(?:•|o)\s*(.+)$", line.strip(), re.I)
             if marker:
@@ -307,69 +515,90 @@ def parse_work_experience(lines: list[str]) -> list[dict]:
         return bullets[:7]
 
     # Some two-column PDFs put the first role on the same line as the section heading.
-    lead = re.sub(r"^.*?work experience\s+", "", lines[start], flags=re.I).replace("│", "|")
-    if "|" in lead and boundaries:
-        lead_title, _, lead_org = (clean_cv_line(part) for part in lead.partition("|"))
-        if start + 1 < len(lines) and not date_pattern.search(lines[start + 1]):
-            lead_org = clean_cv_line(" ".join(filter(None, [lead_org, lines[start + 1]])))
+    lead_raw = lines[start]
+    for name in EXPERIENCE_HEADINGS:
+        lead_raw = re.sub(re.escape(name), " ", lead_raw, flags=re.I)
+    lead_title, lead_org, lead_location = split_role_header(lead_raw.strip(" |·-"), date_pattern)
+    if boundaries and lead_title and lead_org:
         first_date = date_pattern.search(chunk[boundaries[0]])
         first_end = boundaries[1] if len(boundaries) > 1 else len(chunk)
-        if first_date and lead_title:
-            records.append({"title": lead_title[:160], "subtitle": lead_org[:160], "dates": first_date.group(0)[:80], "location": "", "bullets": collect_bullets(chunk[boundaries[0] + 1:first_end])})
+        records.append({"title": lead_title[:160], "subtitle": lead_org[:160], "dates": first_date.group(0)[:80] if first_date else "", "location": lead_location[:80], "bullets": collect_bullets(chunk[boundaries[0] + 1:first_end])})
+
     for position, begin in enumerate(boundaries):
         finish = boundaries[position + 1] if position + 1 < len(boundaries) else len(chunk)
         segment = chunk[begin:finish]
         date_match = date_pattern.search(segment[0])
         if not date_match:
             continue
-        header_positions = [index for index, line in enumerate(segment) if "|" in line or "│" in line]
-        if not header_positions:
-            continue
-        header_index = header_positions[-1]
-        header = segment[header_index].replace("│", "|")
-        title, _, organisation = (clean_cv_line(part) for part in header.partition("|"))
-        title = clean_cv_line(date_pattern.sub("", title))
-        if header_index and (not title or title[:1].islower()):
-            previous = clean_cv_line(date_pattern.sub("", segment[header_index - 1]))
-            if previous and not re.match(r"^(?:•|o)", previous, re.I):
-                title = clean_cv_line(previous + " " + title)
-        following = segment[header_index + 1:]
-        if following and not re.match(r"^(?:•|o\s)", following[0].strip(), re.I) and not date_pattern.search(following[0]):
-            organisation = clean_cv_line(" ".join(filter(None, [organisation, following.pop(0)])))
+        title, organisation, location = split_role_header(segment[0], date_pattern)
+        if begin > 0 and (not title or not organisation):
+            previous = chunk[begin - 1]
+            if not date_pattern.search(previous):
+                previous_title, previous_org, previous_location = split_role_header(previous, date_pattern)
+                title = title or previous_title
+                organisation = organisation or previous_org
+                location = location or previous_location
+        following = segment[1:]
+        if following and not location and looks_like_place(following[0]):
+            location = clean_cv_line(following[0])
+        elif following and not re.match(r"^(?:•|o)\s", following[0].strip(), re.I) and not date_pattern.search(following[0]) and strip_work_mode(following[0]):
+            organisation, extra_location = split_trailing_place(clean_cv_line(" ".join(filter(None, [organisation, strip_work_mode(following[0])]))))
+            location = location or extra_location
         bullets = collect_bullets(following)
         if title and (organisation or bullets):
-            records.append({"title": title[:160], "subtitle": organisation[:160], "dates": date_match.group(0)[:80], "location": "", "bullets": bullets[:7]})
+            records.append({"title": title[:160], "subtitle": organisation[:160], "dates": date_match.group(0)[:80], "location": location[:80], "bullets": bullets[:7]})
     return records[:8]
 
 
 def parse_education(lines: list[str]) -> list[dict]:
-    start = next((index for index, line in enumerate(lines) if any(marker in line.lower() for marker in ("acad. background", "academic background", "education"))), None)
+    start = section_index(lines, EDUCATION_HEADINGS)
     if start is None:
         return []
-    end = next((index for index, line in enumerate(lines[start + 1:], start + 1) if "languages" in line.lower()), len(lines))
+    end = section_index(lines, ("languages", "language skills", "certifications", "certificates", "publications", "projects", "interests", "references", "skills", "core competencies", "profile", "awards", "training", "additional information"), start + 1) or len(lines)
     section = lines[start + 1:end]
     records: list[dict] = []
-    year_pattern = re.compile(r"\b(?:19|20)\d{2}\b")
-    degree_pattern = re.compile(r"\b(?:MBA|M\.Sc|MSc|B\.Sc|BSc|Bachelor|Master|Certificate|Diploma)\b", re.I)
+    degree_pattern = re.compile(r"\b(?:MBA|M\.Sc|MSc|MA|MEng|B\.Sc|BSc|BEng|B\.Eng|BA|Bachelor|Master|PhD|Ph\.D|Doctorate|Certificate|Diploma|HND|OND|PGD)\b", re.I)
+    junk_pattern = re.compile(r"\b(?:Thesis|Dissertation|Graduated|Grade|Grades|Result|Results|Modules|Distance|Award|Awards|Ref|Ref\.|Project|Projects)\b.*$", re.I)
     for index, line in enumerate(section):
         if not degree_pattern.search(line):
             continue
-        detail = line.replace("│", "|")
-        year = year_pattern.search(detail) or (year_pattern.search(section[index + 1]) if index + 1 < len(section) else None)
-        detail = clean_cv_line(year_pattern.sub("", detail))
-        title, _, school = (clean_cv_line(part) for part in detail.partition("|"))
+        years = re.findall(r"\b(?:19|20)\d{2}\b", line)
+        if (not years or re.search(r"[–-]\s*$|\(\s*$", clean_cv_line(line))) and index + 1 < len(section):
+            years += re.findall(r"\b(?:19|20)\d{2}\b", section[index + 1])
+        detail = re.sub(r"\(([^()]*)\)\s*", lambda match: " " if re.search(r"\d{4}", match.group(1)) else match.group(0), line)
+        degree = degree_pattern.search(detail)
+        if degree and degree.start() > 0:  # a wrapped line can carry the tail of the entry above
+            detail = detail[degree.start():]
+        detail = re.sub(r"\b(?:19|20)\d{2}\b", " ", detail)
+        detail = re.sub(r"[()\[\]]", " ", detail)
+        detail = re.sub(r"\s*[–-]\s*$", "", detail)
+        detail = junk_pattern.sub("", detail)
+        parts = re.split(r"\s*[|—–]\s*|\s+-\s+", clean_cv_line(detail), maxsplit=1)
+        title = clean_cv_line(parts[0])
+        school, location = split_trailing_place(parts[1]) if len(parts) > 1 else ("", "")
         if title:
-            records.append({"title": title[:160], "subtitle": school[:160], "dates": year.group(0) if year else "", "location": "", "bullets": []})
+            records.append({"title": title[:160], "subtitle": school[:160], "dates": f"{years[0]} – {years[-1]}" if len(years) > 1 else (years[0] if years else ""), "location": location[:80], "bullets": []})
     return records[:5]
 
 
 def parse_languages(lines: list[str]) -> list[str]:
-    start = next((index for index, line in enumerate(lines) if line.lower() == "languages" or line.lower().startswith("languages ")), None)
+    start = section_index(lines, LANGUAGE_HEADINGS)
     if start is None:
         return []
-    end = next((index for index, line in enumerate(lines[start + 1:], start + 1) if "other rele" in line.lower() or "key qualifications" in line.lower()), len(lines))
-    first = re.sub(r"^languages\s+", "", lines[start], flags=re.I)
-    return normalize_skills([clean_cv_line(line) for line in [first, *lines[start + 1:end]] if ":" in line])
+    end = section_index(lines, ("certifications", "certificates", "publications", "projects", "interests", "references", "additional information", "core competencies", "skills", "profile", "awards", "training", "other relevant"), start + 1) or len(lines)
+    head = re.sub(r"^\s*languages?\s*[:|·-]?\s*", "", lines[start], flags=re.I)
+    block = " · ".join([head, *lines[start + 1:end]])
+    entries: list[str] = []
+    for piece in re.split(r"[·|;]", block):
+        entry = clean_cv_line(piece)
+        if not entry or entry.lower() in {"languages", "language"}:
+            continue
+        match = re.match(r"^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]{2,20})\s*[-–—(]\s*(.+?)\)?$", entry)
+        if match:
+            entries.append(f"{clean_cv_line(match.group(1))} — {clean_cv_line(match.group(2))}")
+        elif re.fullmatch(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]{2,20}", entry):
+            entries.append(entry)
+    return normalize_skills(entries)
 
 
 def profile_from_text(text: str, uploaded_file: str, workspace_token: str) -> dict:
@@ -387,7 +616,7 @@ def profile_from_text(text: str, uploaded_file: str, workspace_token: str) -> di
     key_start = next((index for index, line in enumerate(lines) if "key qualifications" in line.lower()), None)
     if key_start is not None:
         skills.extend(clean_cv_line(line) for line in lines[key_start + 1:key_start + 10] if clean_cv_line(line))
-    location = parsed_location(lines)
+    location = parsed_location([re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()])
     return write_profile({
         "name": candidate_name,
         "email": email_match.group(0) if email_match else "",
@@ -479,7 +708,7 @@ def normalize_freehire_listing(raw: dict) -> dict:
         "id": "freehire-" + job_id,
         "title": str(raw.get("title") or "Untitled role").strip(),
         "company": str(raw.get("company") or "Company not supplied").strip(),
-        "location": str(raw.get("location") or raw.get("work_mode") or "Location not supplied").strip(),
+        "location": str(raw.get("location") or raw.get("work_mode") or "").strip(),
         "posted": str(raw.get("posted_at") or "Recently listed").strip(),
         "keywords": keywords,
         "summary": re.sub(r"\s+", " ", description).strip()[:900] or "Open the original listing for the full description.",
@@ -678,7 +907,7 @@ def cv_content_typst(profile: dict, job: dict) -> tuple[str, dict]:
 #let cv = (
   author: {typst_string(tailored.get("name") or "Candidate")},
   profession: {typst_string(headline)},
-  location: {typst_string(tailored.get("location") or "Location not supplied")},
+  location: {typst_string(tailored.get("location") or "")},
   email: {typst_string(tailored.get("email"))},
   phone: {typst_string(tailored.get("phone"))},
   social: (),
@@ -711,7 +940,7 @@ def cover_typst(profile: dict, job: dict) -> str:
 
 #v(18pt)
 {typst_escape(job['company'])}
-{typst_escape(job['location'])}
+{typst_escape(job['location']) if job.get('location') else ""}
 
 #v(18pt)
 Dear hiring team,

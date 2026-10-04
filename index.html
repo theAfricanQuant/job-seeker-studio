@@ -45,6 +45,10 @@
           <details class="evidence-editor" open><summary>Structured evidence for the actual CV</summary><p>One record per paragraph. First line: <code>Role | Organisation | Dates | Location</code>. Then place each approved achievement on a new line beginning with <code>-</code>. The generator only reorders these exact facts.</p><label>Experience<textarea name="experience_text" rows="10" placeholder="Quantitative Analyst | Acme Capital | 2022 – Present | Lagos, Nigeria&#10;- Built Python research tools for financial time-series analysis.&#10;- Communicated risk-model findings to investment stakeholders."></textarea></label><label>Projects (optional)<textarea name="project_text" rows="6" placeholder="Project name | Context | Year | Link or location&#10;- What you built, using only a fact you can support."></textarea></label><label>Education (optional)<textarea name="education_text" rows="5" placeholder="Degree | Institution | 2018 – 2022 | City, Country&#10;- Thesis, distinction, or other verified detail."></textarea></label><label>Languages (optional)<input name="languages" placeholder="English — fluent, French — professional working proficiency"></label></details>
           <details class="evidence-editor"><summary>Original extracted text (reference only)</summary><p>Kept locally so you can cross-check the structured record. It is not sent to job boards and it is not turned into claims automatically.</p><label>Extracted CV text<textarea name="source_excerpt" rows="7" placeholder="Review the CV text here. Remove anything you do not want stored locally."></textarea></label></details>
           <button class="secondary" type="submit">Save candidate record</button>
+          <div class="step-actions">
+            <button id="continue-to-jobs" class="primary" type="submit" disabled>Continue to matched roles</button>
+            <p id="continue-note" class="quiet">Nothing moves on by itself. Read every field, correct anything the reader got wrong, then continue when you are ready.</p>
+          </div>
         </form>
         <p class="quiet">No sign-in is needed. This browser keeps its own private workspace; keep this browser data if you want to return to your saved CV and documents.</p>
       </section>
@@ -53,6 +57,10 @@
         <div class="panel-head"><div><p class="eyebrow">Role shortlist</p><h2 id="jobs-title">Choose a role worth tailoring for.</h2></div><span id="jobs-source" class="sample-chip">Waiting for profile</span></div>
         <p id="jobs-note" class="quiet">Save a candidate record to search current remote roles. If the source is unavailable, the app clearly falls back to demo roles.</p>
         <div id="jobs" class="job-list"><p class="quiet">Save a candidate record to search current remote roles.</p></div>
+        <div class="step-actions">
+          <button id="continue-to-generate" class="primary" type="button" disabled>Continue with the selected role</button>
+          <p id="role-note" class="quiet">Pick a role from the list, then continue when you are sure. Nothing is generated until you ask for it.</p>
+        </div>
         <button id="back-to-profile" class="secondary step-back" type="button">Back to CV details</button>
       </section>
 
