@@ -1368,7 +1368,9 @@ def ai_tailored_evidence(profile: dict, job: dict) -> tuple[dict, dict]:
             criteria,
             {"requirement": term, "job_title": job.get("title", ""), "candidate_evidence": evidence},
         )
-        if choice in evidence_by_id and confidence >= 0.45:
+        chosen = evidence_by_id.get(choice)
+        has_anchor = bool(chosen and relevance_score(chosen["text"] + " " + chosen["record"], [term]) > 0)
+        if chosen and confidence >= 0.45 and has_anchor:
             selected.setdefault(term, []).append(choice)
     selected_ids = {item_id for values in selected.values() for item_id in values}
     tailored = {**profile}
