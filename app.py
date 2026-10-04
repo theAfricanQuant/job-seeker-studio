@@ -28,6 +28,13 @@ APP_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = APP_ROOT / "local_data"
 WORKSPACES_ROOT = DATA_ROOT / "workspaces"
 UPLOADS = DATA_ROOT / "uploads"  # Legacy local-pilot path; never used by authenticated workspaces.
+
+try:  # The AI layer is optional: without it the deterministic reader is the whole reader.
+    if str(APP_ROOT) not in sys.path:
+        sys.path.insert(0, str(APP_ROOT))
+    import ai_reader
+except ImportError:  # pragma: no cover
+    ai_reader = None
 DOCUMENTS = DATA_ROOT / "documents"  # Retained for isolated document-generation tests.
 CV_STUDIO_RUNTIME = APP_ROOT / "cv_studio_runtime"
 PROFILE_FILE = DATA_ROOT / "profile.json"
@@ -929,7 +936,8 @@ def parse_languages(lines: list[str]) -> list[str]:
     return normalize_skills(entries)
 
 
-def profile_from_text(text: str, uploaded_file: str, workspace_token: str) -> dict:
+def rules_fields(text: str) -> dict:
+    """What the deterministic reader can see in a CV, before anything is written down."""
     lines = cv_lines(text)
     email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
     phone_match = re.search(r"(?:\+?\d[\d ()-]{7,}\d)", text)
@@ -947,7 +955,7 @@ def profile_from_text(text: str, uploaded_file: str, workspace_token: str) -> di
         headline = next((line for line in lines if 4 < len(line) < 80 and ":" not in line and not any(char.isdigit() for char in line) and not {word.lower().strip(".,") for word in line.split()} & CV_LABEL_WORDS and any(word in line.lower() for word in ("analyst", "scientist", "engineer", "research", "manager", "coordinator", "advisor", "consultant", "specialist", "developer", "officer", "lead", "teacher", "lecturer", "nurse", "accountant"))), "")
     skills.extend(skills_from_lines(lines))
     location = parsed_location([re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()])
-    return write_profile({
+    return {
         "name": candidate_name,
         "email": email_match.group(0) if email_match else "",
         "phone": phone_match.group(0) if phone_match else "",
@@ -958,8 +966,77 @@ def profile_from_text(text: str, uploaded_file: str, workspace_token: str) -> di
         "education": parse_education(lines),
         "languages": parse_languages(lines),
         "source_excerpt": "\n".join(lines[:180]),
-        "uploaded_file": uploaded_file,
-    }, workspace_token)
+    }
+
+
+def profile_from_text(text: str, uploaded_file: str, workspace_token: str) -> dict:
+    return write_profile({**rules_fields(text), "uploaded_file": uploaded_file}, workspace_token)
+
+
+def _section_from(lines: list[str], heading: str) -> list[str]:
+    """Re-read the CV as if it began at `heading`, so the rules parser starts in the right place."""
+    try:
+        index = lines.index(heading)
+    except ValueError:
+        index = 0
+    split = ai_reader.split_heading_line(heading)
+    first = [split[1]] if split and split[1] else []
+    return ["Work Experience"] + first + lines[index + 1:]
+
+
+def ai_hybrid_profile(text: str, uploaded_file: str, workspace_token: str) -> tuple[dict, list[str]]:
+    """The rules read the CV; Jev settles only the judgements code is bad at.
+
+    Every value still comes out of the candidate's own text: the model picks between
+    candidates this code computed, or answers a bounded question about them. If TypeSafe is
+    unreachable the rules' reading is returned unchanged, and if the reading comes back thin
+    the full labelling path is tried as a rescue.
+    """
+    if ai_reader is None:
+        return write_profile({**rules_fields(text), "uploaded_file": uploaded_file}, workspace_token), ["ai module missing"]
+
+    fields = rules_fields(text)
+    lines = cv_lines(text)
+    units = ai_reader.merge_units(lines)
+    notes: list[str] = []
+    try:
+        # 1. Which line is the person's own name — the failure the freebie users hit most.
+        chosen, confidence = ai_reader.name_choice(units)
+        if chosen and chosen != "none" and confidence >= 0.5:
+            cleaned = name_candidate(ai_reader.clean_name_line(chosen))
+            if cleaned and cleaned != fields["name"]:
+                fields["name"] = cleaned
+                notes.append(f"name {confidence:.2f}")
+
+        # 2. Role headers: is the job title the first part, or the employer?
+        for role in fields["experiences"]:
+            if not (role["title"] and role["subtitle"]):
+                continue
+            swap, confidence = ai_reader.header_order(role["title"], role["subtitle"])
+            if swap and confidence >= 0.6:
+                role["title"], role["subtitle"] = role["subtitle"], role["title"]
+                notes.append(f"swap {confidence:.2f}")
+
+        # 3. No roles found: ask which line opens the experience part, then re-read from there.
+        if not fields["experiences"]:
+            candidates = [unit for unit in units if len(unit) < 70][:20]
+            heading, confidence = ai_reader.section_choice(candidates)
+            if heading and heading != "none" and heading in units:
+                fields["experiences"] = parse_work_experience(_section_from(units, heading))
+                notes.append(f"section {confidence:.2f}")
+
+        # 4. Still thin: let the model label the whole CV and keep whatever the rules missed.
+        if not fields["experiences"] or not fields["name"]:
+            rescued = ai_reader.read_profile(lines, language_formatter=language_entry)
+            fields["name"] = fields["name"] or name_candidate(ai_reader.clean_name_line(rescued["name_line"]))
+            fields["experiences"] = fields["experiences"] or rescued["experiences"]
+            fields["education"] = fields["education"] or rescued["education"]
+            fields["languages"] = fields["languages"] or rescued["languages"]
+            fields["headline"] = fields["headline"] or rescued["headline"]
+            notes.append("rescue")
+    except ai_reader.Unavailable as error:
+        notes.append(f"rules only ({error})")
+    return write_profile({**fields, "uploaded_file": uploaded_file}, workspace_token), notes
 
 
 def job_matches(profile: dict) -> list[dict]:

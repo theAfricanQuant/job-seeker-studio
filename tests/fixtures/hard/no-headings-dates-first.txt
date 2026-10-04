@@ -1,0 +1,21 @@
+Amara Nwosu
+amara.nwosu@example.com · +44 7700 900123 · Manchester, United Kingdom
+
+Data Scientist
+
+2021 – Present
+Northwind Insurance Group
+Manchester
+● Built a claims-severity model that cut manual review by 30%.
+● Led the migration of 14 reporting pipelines to Airflow.
+
+2018 – 2021
+Brightline Retail
+Leeds
+● Forecast demand for 240 stores.
+● Automated the weekly stock report.
+
+EDUCATION
+2017
+MSc Data Science
+University of Manchester

@@ -1,0 +1,16 @@
+CV
+Dr. Tobias Bergmann
+tobias.bergmann@example.de | +49 151 2345678 | Munich
+
+PROFESSIONAL EXPERIENCE
+Acme Robotics GmbH, Munich — Senior Perception Engineer
+03/2019 – Present
+● Shipped the sensor-fusion module used in four product lines.
+● Mentored three graduate engineers.
+
+Siemens AG, Erlangen — Research Engineer
+07/2015 – 02/2019
+● Filed three patents on calibration routines.
+
+EDUCATION
+2015 PhD Electrical Engineering, TU Munich
