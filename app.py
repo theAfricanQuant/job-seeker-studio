@@ -220,7 +220,26 @@ def normalize_records(value: object, limit: int) -> list[dict]:
     return clean[:limit]
 
 
+INVISIBLE_CHARS = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff\u00ad"), None)
+
+
+def normalize_text(text: str) -> str:
+    """Strip the invisible characters PDF and Word extractors sprinkle through a CV.
+
+    Word exports and `pdftotext` emit zero-width spaces inside field labels
+    ("Name:\u200b Ricky"), which silently breaks every pattern that follows.
+    """
+    text = text.translate(INVISIBLE_CHARS)
+    for space in ("\u00a0", "\u202f", "\u2007", "\u2009", "\u2002"):
+        text = text.replace(space, " ")
+    return text
+
+
 def extract_text(path: Path) -> str:
+    return normalize_text(raw_extract_text(path))
+
+
+def raw_extract_text(path: Path) -> str:
     extension = path.suffix.lower()
     if extension == ".pdf":
         command = ["pdftotext", "-layout", str(path), "-"]
@@ -249,6 +268,8 @@ def extract_text(path: Path) -> str:
 
 
 def cv_lines(text: str) -> list[str]:
+    # Whatever the extractor left behind, no line reaching a parser holds a zero-width space.
+    text = normalize_text(text)
     return [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip() and not re.match(r"^(Page \| \d+|.+@.+)$", line.strip())]
 
 
@@ -391,15 +412,24 @@ def clean_location(line: str) -> str:
 
 
 def parsed_location(lines: list[str]) -> str:
-    for line in lines[:35]:
-        labelled = re.match(r"^(?:address|location|based in|residence|city)\s*[:|\-]\s*(.+)$", line, re.I)
-        if labelled and len(labelled.group(1).strip()) <= 120:
-            value = clean_location(labelled.group(1).strip()).strip(" .,;·|-")
-            pieces = [piece.strip() for piece in value.split(",") if piece.strip()]
-            # A full postal address is not a useful location: keep the town and region.
-            if len(pieces) >= 3 and not any(char.isdigit() for char in pieces[-1]):
-                value = ", ".join(pieces[-2:])
-            return value
+    for index, line in enumerate(lines[:35]):
+        labelled = re.match(r"^(?:address|location|based in|residence|city|town)\s*[:|\-]\s*(.+)$", line, re.I)
+        if not labelled or len(labelled.group(1).strip()) > 120:
+            continue
+        value = clean_location(labelled.group(1).strip()).strip(" .,;·|-")
+        for extra in lines[index + 1:index + 3]:
+            # A postal address that wraps keeps going on the next line.
+            continuation = clean_cv_line(extra)
+            if not continuation or ":" in continuation or len(continuation) > 60 or any(char.isdigit() for char in continuation):
+                break
+            if re.search(r"[.!?]\s*$", value):
+                break
+            value = clean_cv_line(f"{value}, {continuation}").strip(" .,;·|-")
+        pieces = [piece.strip() for piece in value.split(",") if piece.strip()]
+        # A full postal address is not a useful location: keep the town and region.
+        if len(pieces) >= 3 and not any(char.isdigit() for char in pieces[-1]):
+            value = ", ".join(pieces[-2:])
+        return value
     for line in lines[:25]:
         if len(line) > 160:
             continue
@@ -439,9 +469,22 @@ LANGUAGE_HEADINGS = ("languages", "language skills", "language proficiency", "sp
 SECTION_BREAKS = (
     "academic background", "acad. background", "education", "education and training", "languages",
     "language skills", "language proficiency", "certifications", "certificates", "publications",
-    "projects", "interests", "references", "core competencies", "skills", "key skills", "profile",
-    "summary", "awards", "training", "courses", "volunteering", "additional information",
-    "other relevant", "personal details", "contact",
+    "projects", "interests", "hobbies", "references", "core competencies", "core competence", "skills",
+    "key skills", "key qualifications", "profile", "summary", "awards", "training", "courses",
+    "volunteering", "additional information", "additional training", "affiliations",
+    "additional training, experience and affiliations", "computer/internet proficiency",
+    "computer skills", "computer proficiency", "personal data", "personal details", "contact",
+    "other relevant", "referees",
+)
+
+# Bullets come in many glyphs: Word and PDF exports use ●, ▪, ‣ as often as •.
+BULLET_RE = re.compile(r"^(?:[•●○◦▪▫‣·*·–—]|o\s|-)\s*(.+)$")
+
+# "2007 – Present", "2007-Date", "2007 to date", "01/2019 – 06/2021".
+DATE_PATTERN = re.compile(
+    r"(?:(?:0?[1-9]|1[0-2])[/.-]\d{4}|\d{4})\s*(?:[–—-]|\bto\b)\s*"
+    r"(?:(?:0?[1-9]|1[0-2])[/.-]\d{4}|\d{4}|date|till date|to date|present|now|current)",
+    re.I,
 )
 
 
@@ -450,7 +493,7 @@ def section_index(lines: list[str], names: tuple[str, ...], after: int = 0) -> i
     wanted = {heading_key(name) for name in names}
     for index in range(after, len(lines)):
         line = lines[index]
-        if len(line) > 60 or re.match(r"^(?:•|o)\s", line.strip(), re.I):
+        if len(line) > 60 or BULLET_RE.match(line.strip()):
             continue
         if heading_key(line) in wanted:
             return index
@@ -499,7 +542,7 @@ def split_role_header(header: str, date_pattern: re.Pattern) -> tuple[str, str, 
         text = re.sub(r"\)\s*\S+$", "", text)          # text glued after the closing bracket
         text = re.sub(r"[()\[\]]", " ", text)
         text = re.sub(r"\s+", " ", text).strip(" -–—·|,.;")
-        parts = re.split(r"\s*[|—–]\s*|\s+-\s+", text, maxsplit=1)
+        parts = re.split(r"\s*[|—–]\s*|\s+-\s+|:\s+", text, maxsplit=1)
         title = clean_cv_line(parts[0])
         organisation = clean_cv_line(parts[1]) if len(parts) > 1 else ""
     organisation, location = split_trailing_place(organisation)
@@ -514,13 +557,28 @@ def looks_like_place(line: str) -> bool:
     return any(re.search(r"(?<![a-z])" + re.escape(country) + r"(?![a-z])", lowered) for country in COUNTRY_WORDS)
 
 
+INSTITUTION_RE = re.compile(r"\b(?:Universit\w*|Institute|College|Polytechnic|School|Academy|Seminary|Faculty|Campus)\b", re.I)
+
+
+def institution_below(section: list[str], start: int) -> tuple[str, str]:
+    """The school named on one of the lines after a qualification line."""
+    for line in section[start:start + 4]:
+        clean = clean_cv_line(line)
+        if not clean or len(clean) > 120 or DATE_PATTERN.search(clean):
+            continue
+        if INSTITUTION_RE.search(clean):
+            clean = re.sub(r"\b(?:P\.?\s?M\.?\s?B\.?|PMB)\b.*$", "", clean, flags=re.I)
+            return split_trailing_place(clean)
+    return "", ""
+
+
 def parse_work_experience(lines: list[str]) -> list[dict]:
     start = section_index(lines, EXPERIENCE_HEADINGS)
     if start is None:
         return []
     end = section_index(lines, SECTION_BREAKS, start + 1) or len(lines)
     chunk = lines[start + 1:end]
-    date_pattern = re.compile(r"(?:(?:0?[1-9]|1[0-2])[/.-]\d{4}|\d{4})\s*[–-]\s*(?:(?:0?[1-9]|1[0-2])[/.-]\d{4}|\d{4}|till date|present)", re.I)
+    date_pattern = DATE_PATTERN
     boundaries = [index for index, line in enumerate(chunk) if date_pattern.search(line)]
     records: list[dict] = []
 
@@ -531,7 +589,7 @@ def parse_work_experience(lines: list[str]) -> list[dict]:
             clean = clean_cv_line(line)
             if not clean:
                 continue
-            marker = re.match(r"^(?:•|o)\s*(.+)$", line.strip(), re.I)
+            marker = BULLET_RE.match(line.strip())
             if marker:
                 if current:
                     bullets.append(current)
@@ -567,9 +625,13 @@ def parse_work_experience(lines: list[str]) -> list[dict]:
                 organisation = organisation or previous_org
                 location = location or previous_location
         following = segment[1:]
-        if following and not location and looks_like_place(following[0]):
-            location = clean_cv_line(following[0])
-        elif following and not re.match(r"^(?:•|o)\s", following[0].strip(), re.I) and not date_pattern.search(following[0]) and strip_work_mode(following[0]):
+        if following and looks_like_place(following[0]):
+            place = clean_cv_line(following[0])
+            if not location:
+                location = place
+            elif place.lower() not in location.lower():
+                location = f"{location}, {place}"   # "Vom" on one line, "Nigeria" on the next
+        elif following and not BULLET_RE.match(following[0].strip()) and not date_pattern.search(following[0]) and strip_work_mode(following[0]) and not organisation:
             organisation, extra_location = split_trailing_place(clean_cv_line(" ".join(filter(None, [organisation, strip_work_mode(following[0])]))))
             location = location or extra_location
         bullets = collect_bullets(following)
@@ -582,7 +644,7 @@ def parse_education(lines: list[str]) -> list[dict]:
     start = section_index(lines, EDUCATION_HEADINGS)
     if start is None:
         return []
-    end = section_index(lines, ("languages", "language skills", "certifications", "certificates", "publications", "projects", "interests", "references", "skills", "core competencies", "profile", "awards", "training", "additional information"), start + 1) or len(lines)
+    end = section_index(lines, SECTION_BREAKS + EXPERIENCE_HEADINGS, start + 1) or len(lines)
     section = lines[start + 1:end]
     records: list[dict] = []
     degree_pattern = re.compile(r"\b(?:MBA|M\.Sc|MSc|MA|MEng|B\.Sc|BSc|BEng|B\.Eng|BA|Bachelor|Master|PhD|Ph\.D|Doctorate|Certificate|Diploma|HND|OND|PGD)\b", re.I)
@@ -595,7 +657,9 @@ def parse_education(lines: list[str]) -> list[dict]:
             years += re.findall(r"\b(?:19|20)\d{2}\b", section[index + 1])
         detail = re.sub(r"\(([^()]*)\)\s*", lambda match: " " if re.search(r"\d{4}", match.group(1)) else match.group(0), line)
         degree = degree_pattern.search(detail)
-        if degree and degree.start() > 0:  # a wrapped line can carry the tail of the entry above
+        # A wrapped line carries the tail of the entry above ("…portfolios.BEng …"); a degree
+        # that simply starts this entry's name ("Senior Secondary Certificate …") does not.
+        if degree and degree.start() > 0 and not detail[degree.start() - 1].isspace():
             detail = detail[degree.start():]
         detail = re.sub(r"\b(?:19|20)\d{2}\b", " ", detail)
         detail = re.sub(r"[()\[\]]", " ", detail)
@@ -604,27 +668,104 @@ def parse_education(lines: list[str]) -> list[dict]:
         parts = re.split(r"\s*[|—–]\s*|\s+-\s+", clean_cv_line(detail), maxsplit=1)
         title = clean_cv_line(parts[0])
         school, location = split_trailing_place(parts[1]) if len(parts) > 1 else ("", "")
+        if not school:
+            # The qualification and the school are usually on separate lines.
+            school, location = institution_below(section, index + 1)
         if title:
             records.append({"title": title[:160], "subtitle": school[:160], "dates": f"{years[0]} – {years[-1]}" if len(years) > 1 else (years[0] if years else ""), "location": location[:80], "bullets": []})
     return records[:5]
 
 
+LANGUAGE_COLUMNS = {"language", "languages", "written", "spoken", "reading", "listening", "speaking",
+                    "level", "proficiency", "fluency", "score", "skill", "skills"}
+LANGUAGE_LEVELS = ("mother tongue", "above average", "bilingual", "conversational", "native", "fluent",
+                   "excellent", "advanced", "intermediate", "proficient", "average", "beginner",
+                   "basic", "good", "fair", "poor", "working", "limited")
+
+
+SKILL_HEADINGS = ("skills", "key skills", "technical skills", "core competencies", "core competence",
+                  "areas of expertise", "expertise", "competencies", "computer skills",
+                  "computer/internet proficiency", "computer proficiency", "key qualifications",
+                  "proficiencies", "technical proficiencies")
+SKILL_LABELS = re.compile(
+    r"^(?:core competenc(?:e|ies)|key skills|skills|technical skills|areas of expertise|"
+    r"key qualifications|proficiencies|technical proficiencies|computer skills)\s*[:|]\s*(.+)$", re.I)
+
+
+def skills_from_lines(lines: list[str]) -> list[str]:
+    """Read a labelled competence line, or a Skills / Computer proficiency section."""
+    found: list[str] = []
+    headings = {heading_key(name) for name in SKILL_HEADINGS}
+    breaks = {heading_key(name) for name in SECTION_BREAKS}
+    for index, line in enumerate(lines):
+        clean = clean_cv_line(line)
+        labelled = SKILL_LABELS.match(clean)
+        if labelled:
+            for piece in re.split(r"[,;]", labelled.group(1)):
+                piece = clean_cv_line(piece)
+                if 2 < len(piece) <= 60:
+                    found.append(piece)
+            continue
+        if len(clean) > 60 or heading_key(clean) not in headings:
+            continue
+        for extra in lines[index + 1:index + 9]:
+            marker = BULLET_RE.match(extra.strip())
+            value = clean_cv_line(marker.group(1) if marker else extra)
+            if not value:
+                continue
+            if len(value) > 60 or heading_key(value) in breaks:
+                break
+            found.append(value)
+    return normalize_skills(found)
+
+
+def language_entry(clean: str) -> str:
+    """One row of a language table, or one item of a list: "ENGLISH   excellent …"."""
+    tokens = clean.split()
+    if not tokens:
+        return ""
+    name = tokens[0].strip(".,;:()[]")
+    if not name or name.lower() in LANGUAGE_COLUMNS or not re.fullmatch(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]{1,24}", name):
+        return ""
+    rest = clean[len(tokens[0]):].strip(" -–—:·|,.;()[]")
+    level = ""
+    words = rest.split()
+    for position in range(len(words)):
+        phrase = " ".join(words[position:position + 2]).lower().strip(".,;:()[]")
+        single = words[position].lower().strip(".,;:()[]")
+        if phrase in LANGUAGE_LEVELS:
+            level = phrase
+            break
+        if single in LANGUAGE_LEVELS:
+            level = single
+            break
+    if level:
+        return f"{name} — {level}"
+    return name if not rest else ""
+
+
 def parse_languages(lines: list[str]) -> list[str]:
+    # "Languages: English (fluent), German (basic)" on one line.
+    inline: list[str] = []
+    for line in lines:
+        match = re.match(r"^\s*languages?\s*[:|]\s*(.+)$", line, re.I)
+        if not match:
+            continue
+        for piece in re.split(r"[,;·|]", match.group(1)):
+            entry = language_entry(clean_cv_line(piece))
+            if entry:
+                inline.append(entry)
+    if inline:
+        return normalize_skills(inline)
     start = section_index(lines, LANGUAGE_HEADINGS)
     if start is None:
         return []
-    end = section_index(lines, ("certifications", "certificates", "publications", "projects", "interests", "references", "additional information", "core competencies", "skills", "profile", "awards", "training", "other relevant"), start + 1) or len(lines)
-    head = re.sub(r"^\s*languages?\s*[:|·-]?\s*", "", lines[start], flags=re.I)
-    block = " · ".join([head, *lines[start + 1:end]])
+    end = section_index(lines, SECTION_BREAKS, start + 1) or len(lines)
     entries: list[str] = []
-    for piece in re.split(r"[·|;]", block):
-        entry = clean_cv_line(piece)
-        if not entry or entry.lower() in {"languages", "language"}:
-            continue
-        match = re.match(r"^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]{2,20})\s*[-–—(]\s*(.+?)\)?$", entry)
-        if match:
-            entries.append(f"{clean_cv_line(match.group(1))} — {clean_cv_line(match.group(2))}")
-        elif re.fullmatch(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' -]{2,20}", entry):
+    head = re.sub(r"^\s*languages?\s*[:|·-]?\s*", "", lines[start], flags=re.I)
+    for line in [head, *lines[start + 1:end]]:
+        entry = language_entry(clean_cv_line(line))
+        if entry:
             entries.append(entry)
     return normalize_skills(entries)
 
@@ -645,9 +786,7 @@ def profile_from_text(text: str, uploaded_file: str, workspace_token: str) -> di
     else:
         # Fall back to a line that reads like a job title — never a labelled field or an address.
         headline = next((line for line in lines if 4 < len(line) < 80 and ":" not in line and not any(char.isdigit() for char in line) and not {word.lower().strip(".,") for word in line.split()} & CV_LABEL_WORDS and any(word in line.lower() for word in ("analyst", "scientist", "engineer", "research", "manager", "coordinator", "advisor", "consultant", "specialist", "developer", "officer", "lead", "teacher", "lecturer", "nurse", "accountant"))), "")
-    key_start = next((index for index, line in enumerate(lines) if "key qualifications" in line.lower()), None)
-    if key_start is not None:
-        skills.extend(clean_cv_line(line) for line in lines[key_start + 1:key_start + 10] if clean_cv_line(line))
+    skills.extend(skills_from_lines(lines))
     location = parsed_location([re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()])
     return write_profile({
         "name": candidate_name,
