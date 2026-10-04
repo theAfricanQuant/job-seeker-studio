@@ -984,6 +984,48 @@ def _section_from(lines: list[str], heading: str) -> list[str]:
     return ["Work Experience"] + first + lines[index + 1:]
 
 
+ORG_WORDS = re.compile(r"\b(?:GmbH|AG|Ltd|Limited|Inc|LLC|PLC|University|College|Institute|Foundation|Group|Bank|Ministry|Authority|Company|Corp|Agency|Department)\b", re.I)
+ROLE_WORDS = re.compile(r"^(?:Senior|Head|Chief|Lead|Principal|Junior|Deputy|Assistant|Research|Manager|Director|Coordinator|Advisor|Engineer|Scientist|Analyst|Developer|Consultant|Specialist|Officer|Teacher|Lecturer|Intern|Trainee|Project|Programme|Program|Operations)\b", re.I)
+
+
+def doubtful_role(role: dict) -> bool:
+    """A role whose header the rules may have split the wrong way round.
+
+    An organisation in the title and a job title in the organisation is the shape an
+    employer-first CV leaves behind, and it is the one the reader cannot see by itself.
+    """
+    title, subtitle = role.get("title", ""), role.get("subtitle", "")
+    return bool(title and subtitle and ORG_WORDS.search(title) and ROLE_WORDS.match(subtitle))
+
+
+def header_candidates(units: list[str], dates: str) -> list[str]:
+    """The lines just above a role's dates — any of them could be that role's own header."""
+    index = next((position for position, unit in enumerate(units) if dates and unit.strip() == dates.strip()), -1)
+    if index < 0:
+        return []
+    found = []
+    for unit in reversed(units[max(0, index - 3):index]):
+        if BULLET_RE.match(unit) or DATE_PATTERN.search(unit) or len(unit) > 90:
+            continue
+        found.append(unit)
+    return list(reversed(found))
+
+
+def role_bullets(units: list[str], dates: str) -> list[str]:
+    """The bullets that sit under a role's own dates, up to the next role."""
+    index = next((position for position, unit in enumerate(units) if dates and unit.strip() == dates.strip()), -1)
+    if index < 0:
+        return []
+    found = []
+    for unit in units[index + 1:]:
+        bullet = BULLET_RE.match(unit)
+        if bullet:
+            found.append(clean_cv_line(bullet.group(1)))
+        elif DATE_PATTERN.search(unit):
+            break
+    return found
+
+
 def ai_hybrid_profile(text: str, uploaded_file: str, workspace_token: str) -> tuple[dict, list[str]]:
     """The rules read the CV; Jev settles only the judgements code is bad at.
 
@@ -1008,7 +1050,22 @@ def ai_hybrid_profile(text: str, uploaded_file: str, workspace_token: str) -> tu
                 fields["name"] = cleaned
                 notes.append(f"name {confidence:.2f}")
 
-        # 2. Role headers: is the job title the first part, or the employer?
+        # 2. A role whose header the rules may have split the wrong way round (an employer-first
+        #    CV): let the model pick that role's own header line, then split it in code.
+        for role in fields["experiences"]:
+            if not doubtful_role(role):
+                continue
+            candidates = header_candidates(units, role["dates"])
+            chosen, confidence = ai_reader.header_choice(candidates, role["dates"])
+            if chosen and chosen != "none" and confidence >= 0.5:
+                title, organisation, location = split_role_header(chosen, DATE_PATTERN)
+                if title or organisation:
+                    role["title"], role["subtitle"] = title, organisation
+                    role["location"] = location or role["location"]
+                    role["bullets"] = role_bullets(units, role["dates"]) or role["bullets"]
+                    notes.append(f"header {confidence:.2f}")
+
+        # 3. Role headers: is the job title the first part, or the employer?
         for role in fields["experiences"]:
             if not (role["title"] and role["subtitle"]):
                 continue
@@ -1017,7 +1074,7 @@ def ai_hybrid_profile(text: str, uploaded_file: str, workspace_token: str) -> tu
                 role["title"], role["subtitle"] = role["subtitle"], role["title"]
                 notes.append(f"swap {confidence:.2f}")
 
-        # 3. No roles found: ask which line opens the experience part, then re-read from there.
+        # 4. No roles found: ask which line opens the experience part, then re-read from there.
         if not fields["experiences"]:
             candidates = [unit for unit in units if len(unit) < 70][:20]
             heading, confidence = ai_reader.section_choice(candidates)
@@ -1025,7 +1082,7 @@ def ai_hybrid_profile(text: str, uploaded_file: str, workspace_token: str) -> tu
                 fields["experiences"] = parse_work_experience(_section_from(units, heading))
                 notes.append(f"section {confidence:.2f}")
 
-        # 4. Still thin: let the model label the whole CV and keep whatever the rules missed.
+        # 5. Still thin: let the model label the whole CV and keep whatever the rules missed.
         if not fields["experiences"] or not fields["name"]:
             rescued = ai_reader.read_profile(lines, language_formatter=language_entry)
             fields["name"] = fields["name"] or name_candidate(ai_reader.clean_name_line(rescued["name_line"]))

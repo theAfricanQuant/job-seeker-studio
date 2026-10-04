@@ -257,6 +257,19 @@ def section_choice(candidates: list[str], key: str | None = None) -> tuple[str, 
     )
 
 
+def header_choice(candidates: list[str], dates: str, key: str | None = None) -> tuple[str, float]:
+    """Which of the lines above a role's dates is that role's own header?"""
+    if not candidates:
+        return "", 0.0
+    criteria = {line: "a line from this CV" for line in candidates}
+    criteria["none"] = "none of these lines is the header of that job"
+    return _ask(
+        f"Which of these lines names the job title and the employer for the job that started {dates}? "
+        "Ignore any line that belongs to a different job.",
+        criteria, {"lines": candidates, "job_started": dates}, key,
+    )
+
+
 def clean_name_line(line: str) -> str:
     """Strip a label the model's line may still carry: 'Name Ene Sandra Macharm' → 'Ene Sandra…'."""
     value = re.sub(r"^\s*(?:full\s+name|name)\b\s*[:\-–]?\s*", "", line, flags=re.I)
