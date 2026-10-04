@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from html import escape as xml_escape
+from html import escape as xml_escape, unescape as html_unescape
 import json
 import mimetypes
 import os
@@ -1144,6 +1144,7 @@ def normalize_jobicy_listing(raw: dict) -> dict:
     if not job_id:
         raise ValueError("A remote listing did not include an identifier.")
     description = re.sub(r"<[^>]+>", " ", str(raw.get("jobDescription") or ""))
+    description = html_unescape(description)
     return {
         "id": "jobicy-" + job_id,
         "title": str(raw.get("jobTitle") or "Untitled role").strip(),
@@ -1175,6 +1176,7 @@ def normalize_freehire_listing(raw: dict) -> dict:
     if not job_id:
         raise ValueError("A FreeHire listing did not include a public identifier.")
     description = re.sub(r"<[^>]+>", " ", str(raw.get("description") or ""))
+    description = html_unescape(description)
     enrichment = raw.get("enrichment") if isinstance(raw.get("enrichment"), dict) else {}
     keywords = [str(value) for value in raw.get("skills", [])]
     if enrichment.get("category"):
@@ -1275,7 +1277,13 @@ def job_by_id(job_id: str, owner_email: str | None = None) -> dict | None:
 
 
 def typst_escape(value: str) -> str:
-    replacements = {"\\": "\\\\", "#": "\\#", "@": "\\@", "[": "\\[", "]": "\\]", "{": "\\{", "}": "\\}", "*": "\\*", "_": "\\_"}
+    """Escape every character Typst reads as markup or code.
+
+    A job listing is untrusted text: `$75b` opens math mode, `#` starts code, `@` a
+    reference. One unescaped `$` in a description was enough to break a whole letter.
+    """
+    replacements = {"\\": "\\\\", "#": "\\#", "@": "\\@", "[": "\\[", "]": "\\]", "{": "\\{", "}": "\\}",
+                    "*": "\\*", "_": "\\_", "$": "\\$", "`": "\\`", "~": "\\~", "<": "\\<", ">": "\\>", "%": "\\%"}
     return "".join(replacements.get(character, character) for character in value)
 
 
@@ -1404,6 +1412,16 @@ def cv_content_typst(profile: dict, job: dict) -> tuple[str, dict]:
 ''', tailoring
 
 
+def listing_phrase(summary: object, limit: int = 170) -> str:
+    """The listing's own first sentence: the letter quotes the employer, it does not paste the advert."""
+    text = re.sub(r"\s+", " ", str(summary or "")).strip()
+    match = re.match(r"(.+?[.!?])(\s|$)", text)
+    sentence = match.group(1) if match else text
+    if len(sentence) > limit:
+        sentence = sentence[:limit].rsplit(" ", 1)[0] + "…"
+    return sentence
+
+
 def cover_typst(profile: dict, job: dict) -> str:
     name = typst_escape(profile.get("name") or "Candidate")
     contact = " · ".join(filter(None, [profile.get("email"), profile.get("phone")])) or "Contact details to be confirmed"
@@ -1422,7 +1440,7 @@ def cover_typst(profile: dict, job: dict) -> str:
 #v(18pt)
 Dear hiring team,
 
-I am applying for the *{typst_escape(job['title'])}* role at *{typst_escape(job['company'])}*. My approved profile highlights experience and capabilities in {typst_escape(skills)}. I am particularly interested in the opportunity to contribute to work that involves {typst_escape(job['summary'].lower())}
+I am applying for the *{typst_escape(job['title'])}* role at *{typst_escape(job['company'])}*. My approved profile highlights experience and capabilities in {typst_escape(skills)}. Your listing describes the work as: *{typst_escape(listing_phrase(job.get('summary')))}* I would welcome the chance to discuss how my experience fits it.
 
 This letter is intentionally a truthful starting draft. Before sending it, I will review the wording, add only specific evidence I can substantiate, and make sure it reflects my own voice.
 
@@ -1558,7 +1576,7 @@ def cover_docx(profile: dict, job: dict, output: Path) -> None:
     paragraphs.extend([
         word_paragraph(f"{job['company']}\n{job['location']}"),
         word_paragraph("Dear hiring team,"),
-        word_paragraph(f"I am applying for the {job['title']} role at {job['company']}. My approved profile highlights experience and capabilities in {skills}. I am particularly interested in the opportunity to contribute to work that involves {job['summary'].lower()}"),
+        word_paragraph(f"I am applying for the {job['title']} role at {job['company']}. My approved profile highlights experience and capabilities in {skills}. Your listing describes the work as: {listing_phrase(job.get('summary'))} I would welcome the chance to discuss how my experience fits it."),
         word_paragraph("This letter is a truthful starting draft. Before sending it, I will review the wording, add only specific evidence I can substantiate, and make sure it reflects my own voice."),
         word_paragraph("Sincerely,"),
         word_paragraph(profile.get("name") or "Candidate"),
@@ -1629,6 +1647,7 @@ def generate_documents(profile: dict, job_id: str, owner_email: str | None = Non
         "compiled": selected_ok and ats_ok and letter_ok,
         "template": template,
         "primary_cv": selected_pdf.name if selected_ok else "",
+        "cover_letter": letter_pdf.name if letter_ok else "",
         "tailoring": docx_tailoring,
         "message": "PDF and editable Word CV and cover letter are ready." if selected_ok and ats_ok and letter_ok else "Editable Word documents are ready; PDF compilation needs attention.",
         "errors": [error for error in (selected_error, ats_error, letter_error) if error],
