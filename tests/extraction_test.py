@@ -147,6 +147,39 @@ def fixture_pdfs(app) -> list[Path]:
     return rendered
 
 
+def ai_cannot_reverse_a_sound_role(app) -> tuple[str, str]:
+    """A confident model answer must not undo a complete deterministic role record."""
+    class IncorrectSwapper:
+        class Unavailable(RuntimeError):
+            pass
+
+        @staticmethod
+        def merge_units(lines):
+            return lines
+
+        @staticmethod
+        def name_choice(_units):
+            return "none", 1.0
+
+        @staticmethod
+        def header_order(_title, _organisation):
+            return True, 0.99
+
+    body = (
+        "Priya Raman\n\nWork Experience\n"
+        "2020-2023: Acme Energy Ltd., Lagos, Nigeria – Data Scientist\n"
+        "• Built research models.\n"
+    )
+    original = app.ai_reader
+    app.ai_reader = IncorrectSwapper
+    try:
+        profile, _ = app.ai_hybrid_profile(body, "sample.txt", "ai-safety-fixture-token")
+    finally:
+        app.ai_reader = original
+    role = profile["experiences"][0]
+    return role["title"], role["subtitle"]
+
+
 def main() -> None:
     app = load_app()
     failures: list[str] = []
@@ -177,6 +210,10 @@ def main() -> None:
                 f"{label}: got {first['title']!r} / {first['dates']!r} / {first['subtitle']!r} / "
                 f"{len(first['bullets'])} bullets, expected {expected_title!r} / {expected_dates!r} / {expected_org!r} / {expected_bullets}"
             )
+
+    ai_title, ai_org = ai_cannot_reverse_a_sound_role(app)
+    if (ai_title, ai_org) != ("Data Scientist", "Acme Energy Ltd."):
+        failures.append(f"AI reversed a sound role: got {ai_title!r} / {ai_org!r}")
 
     for label, body, expected in LANGUAGE_CASES:
         got = app.parse_languages(app.cv_lines(body))

@@ -1133,14 +1133,9 @@ def ai_hybrid_profile(text: str, uploaded_file: str, workspace_token: str) -> tu
                     role["bullets"] = role_bullets(units, role["dates"]) or role["bullets"]
                     notes.append(f"header {confidence:.2f}")
 
-        # 3. Role headers: is the job title the first part, or the employer?
-        for role in fields["experiences"]:
-            if not (role["title"] and role["subtitle"]):
-                continue
-            swap, confidence = ai_reader.header_order(role["title"], role["subtitle"])
-            if swap and confidence >= 0.6:
-                role["title"], role["subtitle"] = role["subtitle"], role["title"]
-                notes.append(f"swap {confidence:.2f}")
+        # A complete deterministic record is candidate evidence, not an AI suggestion.
+        # The model may select a header only for a role the structural reader flagged as
+        # doubtful above; a broad yes/no answer must never reverse sound title/employer data.
 
         # 4. No roles found: ask which line opens the experience part, then re-read from there.
         if not fields["experiences"]:
