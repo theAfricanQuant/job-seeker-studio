@@ -67,6 +67,27 @@ def main() -> None:
             text = subprocess.run(["pdftotext", str(pdf), "-"], check=True, capture_output=True, text=True).stdout
             assert "Taylor" in text and "Example" in text, (item["name"], text[:500])
         assert "Built Python research tools" in subprocess.run(["pdftotext", str(app.DATA_ROOT / next(item["url"].removeprefix("/files/") for item in result["files"] if item["name"] == "tailored_cv_meridian.pdf")), "-"], check=True, capture_output=True, text=True).stdout
+        base_result = app.generate_cv(
+            {
+                "name": "Taylor Example",
+                "email": "taylor@example.com",
+                "phone": "+49 123 456 789",
+                "location": "Berlin, Germany",
+                "headline": "Quantitative analyst",
+                "skills": ["Python", "Time series", "Risk modelling"],
+                "cv_template": "meridian",
+                "experiences": [{
+                    "title": "Quantitative Analyst", "subtitle": "Example Capital", "dates": "2021 – Present", "location": "Berlin",
+                    "bullets": ["Built Python research tools for financial time-series analysis."],
+                }],
+            }
+        )
+        assert base_result["compiled"], base_result["errors"]
+        assert base_result["primary_cv"] == "cv_meridian.pdf"
+        assert {item["name"] for item in base_result["files"]} == {"cv_meridian.pdf", "cv_editable.docx"}
+        base_pdf = app.DATA_ROOT / next(item["url"].removeprefix("/files/") for item in base_result["files"] if item["name"] == "cv_meridian.pdf")
+        base_text = subprocess.run(["pdftotext", str(base_pdf), "-"], check=True, capture_output=True, text=True).stdout
+        assert "Taylor" in base_text and "Built Python research tools" in base_text
         print("Field Notes smoke test passed: PDFs compiled and editable DOCX CV and cover letter were created.")
 
 

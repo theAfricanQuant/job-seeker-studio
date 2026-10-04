@@ -1492,8 +1492,16 @@ def tailored_evidence(profile: dict, job: dict) -> tuple[dict, dict]:
     }
 
 
-def cv_content_typst(profile: dict, job: dict) -> tuple[str, dict]:
-    tailored, tailoring = tailored_evidence(profile, job)
+def cv_content_typst(profile: dict, job: dict | None = None) -> tuple[str, dict]:
+    if job:
+        tailored, tailoring = tailored_evidence(profile, job)
+        summary = f"{tailored.get('headline') or 'Professional profile'}. This application version orders only approved evidence against the selected {job.get('title', 'role')} listing."
+    else:
+        # The primary freebie is a faithful, candidate-approved CV. It does not imply an
+        # application or reorder the person's evidence around a listing they did not choose.
+        tailored = {**profile}
+        tailoring = {"mode": "Candidate-approved CV in its original record order.", "matched_terms": [], "foregrounded_evidence": [], "unverified_terms": [], "evidence_map": []}
+        summary = tailored.get("headline") or "Candidate-approved professional profile."
     contact_parts = [value for value in [tailored.get("email"), tailored.get("phone")] if value]
     contact = " | ".join(contact_parts) or "Contact details to be confirmed"
     skills = tailored.get("skills", [])
@@ -1530,7 +1538,6 @@ def cv_content_typst(profile: dict, job: dict) -> tuple[str, dict]:
       entries: ((title: "", subtitle: "", lines: (%s,)),),
     )""" % typst_string(" · ".join(tailored["languages"])))
     headline = tailored.get("headline") or "Professional profile"
-    summary = f"{headline}. This application version orders only approved evidence against the selected {job.get('title', 'role')} listing."
     contact_items = [item for item in [*contact_parts, tailored.get("location")] if item] or ["Contact details to be confirmed"]
     return f'''// Generated locally by Field Notes Career Studio.
 // Facts are candidate-approved. Tailoring only changes ordering; it does not invent claims.
@@ -1686,8 +1693,14 @@ def write_docx(path: Path, paragraphs: list[str], title: str) -> None:
         archive.writestr("docProps/app.xml", app)
 
 
-def cv_docx(profile: dict, job: dict, output: Path) -> dict:
-    tailored, tailoring = tailored_evidence(profile, job)
+def cv_docx(profile: dict, job: dict | None, output: Path) -> dict:
+    if job:
+        tailored, tailoring = tailored_evidence(profile, job)
+        profile_copy = f"{tailored.get('headline') or 'Professional profile'}. This application version orders only approved evidence against the selected {job.get('title', 'role')} listing."
+    else:
+        tailored = {**profile}
+        tailoring = {"mode": "Candidate-approved CV in its original record order.", "matched_terms": [], "foregrounded_evidence": [], "unverified_terms": [], "evidence_map": []}
+        profile_copy = tailored.get("headline") or "Candidate-approved professional profile."
     title = "Curriculum Vitae"
     contact = " | ".join(value for value in (tailored.get("email"), tailored.get("phone"), tailored.get("location")) if value)
     paragraphs = [word_paragraph(title, style="Title", centered=True), word_paragraph(tailored.get("name") or "Candidate", style="Subtitle", centered=True)]
@@ -1695,7 +1708,7 @@ def cv_docx(profile: dict, job: dict, output: Path) -> dict:
         paragraphs.append(word_paragraph(tailored["headline"], style="Meta", centered=True))
     if contact:
         paragraphs.append(word_paragraph(contact, style="Meta", centered=True))
-    paragraphs.extend([word_paragraph("Profile", style="Heading1"), word_paragraph(f"{tailored.get('headline') or 'Professional profile'}. This application version orders only approved evidence against the selected {job.get('title', 'role')} listing.")])
+    paragraphs.extend([word_paragraph("Profile", style="Heading1"), word_paragraph(profile_copy)])
     if tailored.get("skills"):
         paragraphs.extend([word_paragraph("Core Competencies", style="Heading1"), word_paragraph(" • ".join(tailored["skills"]))])
 
@@ -1742,7 +1755,7 @@ def cover_docx(profile: dict, job: dict, output: Path) -> None:
     write_docx(output, paragraphs, title)
 
 
-def prepare_cv_studio(folder: Path, profile: dict, job: dict) -> tuple[Path, dict]:
+def prepare_cv_studio(folder: Path, profile: dict, job: dict | None = None) -> tuple[Path, dict]:
     """Create an isolated, local render project so one candidate's data never becomes shared template data."""
     if not CV_STUDIO_RUNTIME.is_dir():
         raise ValueError("The local CV Studio runtime is missing. Reinstall the template runtime before generating.")
@@ -1753,6 +1766,40 @@ def prepare_cv_studio(folder: Path, profile: dict, job: dict) -> tuple[Path, dic
     return studio, tailoring
 
 
+def generate_cv(profile: dict, owner_email: str | None = None) -> dict:
+    """Create the candidate's chosen-template CV, with no job selection required."""
+    if not profile.get("name"):
+        raise ValueError("Review and save the candidate name before generating the CV.")
+    if not profile.get("experiences"):
+        raise ValueError("Add and save at least one structured experience record before generating the CV.")
+    template = profile.get("cv_template", "ats-plain")
+    if template not in CV_TEMPLATES:
+        raise ValueError("Choose one of the CV Studio templates before generating.")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    documents_root = workspace_documents(owner_email) if owner_email else DOCUMENTS
+    documents_root.mkdir(parents=True, exist_ok=True)
+    folder = documents_root / stamp
+    folder.mkdir(parents=True, exist_ok=True)
+    studio, _ = prepare_cv_studio(folder, profile)
+    selected_pdf = folder / f"cv_{template}.pdf"
+    editable_cv = folder / "cv_editable.docx"
+    cv_docx(profile, None, editable_cv)
+    selected_studio_pdf, selected_error = compile_cv_studio(studio, template)
+    files = [editable_cv]
+    if selected_studio_pdf:
+        shutil.copy2(selected_studio_pdf, selected_pdf)
+        files.insert(0, selected_pdf)
+    file_root = workspace_root(owner_email) if owner_email else DATA_ROOT
+    return {
+        "compiled": selected_studio_pdf is not None,
+        "template": template,
+        "primary_cv": selected_pdf.name if selected_studio_pdf else "",
+        "message": "Your CV is ready in the selected template." if selected_studio_pdf else "Your editable Word CV is ready; PDF compilation needs attention.",
+        "errors": [error for error in (selected_error,) if error],
+        "files": [{"name": file.name, "url": "/files/" + file.relative_to(file_root).as_posix()} for file in files],
+    }
+
+
 def generate_documents(profile: dict, job_id: str, owner_email: str | None = None) -> dict:
     job = job_by_id(job_id, owner_email)
     if not job:
@@ -1761,7 +1808,7 @@ def generate_documents(profile: dict, job_id: str, owner_email: str | None = Non
         raise ValueError("Review and save the candidate name before generating documents.")
     if not profile.get("experiences"):
         raise ValueError("Add and save at least one structured experience record before generating. The original CV text is reference material, not CV content.")
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     documents_root = workspace_documents(owner_email) if owner_email else DOCUMENTS
     documents_root.mkdir(parents=True, exist_ok=True)
     folder = documents_root / stamp
@@ -1930,6 +1977,8 @@ class FieldNotesHandler(SimpleHTTPRequestHandler):
                 return self.send_json({"reset": True, "profile": empty_profile(), "message": "Everything has been reset. This workspace contains no previous CV, jobs or documents."}, headers=reset_headers)
             if path == "/api/profile":
                 return self.send_json({"profile": write_profile(body, token), "message": "Profile saved in this browser workspace."}, headers=headers)
+            if path == "/api/generate-cv":
+                return self.send_json(generate_cv(read_profile(token), token), headers=headers)
             if path == "/api/generate":
                 profile = read_profile(token)
                 return self.send_json(generate_documents(profile, str(body.get("job_id", "")), token), headers=headers)

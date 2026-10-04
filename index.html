@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Field Notes Career Studio — CV-to-job matching pilot</title>
+  <title>Field Notes Career Studio — create a CV you can use</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -16,63 +16,58 @@
 
     <section class="hero">
       <div>
-        <p class="eyebrow">Your CV, your evidence, your next role</p>
-        <h1>Start from the candidate.<br><em>Then find the right role.</em></h1>
-        <p class="lede">Upload a CV, confirm the extracted facts, see matching remote roles, and create a truthful PDF and editable Word application package for one you choose.</p>
+        <p class="eyebrow">A usable CV, before anything else</p>
+        <h1>Choose the design.<br><em>Leave with your CV.</em></h1>
+        <p class="lede">Upload your CV, correct the facts, choose from real document designs, and download a polished PDF plus an editable Word version. Suitable job links appear afterwards if you want to explore them.</p>
       </div>
       <aside class="workflow" aria-label="Workflow">
-        <span>01</span> Upload your CV
-        <span>02</span> Choose a matched role
-        <span>03</span> Generate and download
+        <span>01</span> Read and confirm your CV
+        <span>02</span> Choose a design for your CV
+        <span>03</span> Preview, download, and explore roles
       </aside>
     </section>
 
     <section class="status-line" id="status">Checking local document tools…</section>
 
-    <nav class="journey" aria-label="Application journey"><ol><li data-step-marker="1"><span>01</span><b>Upload CV</b><small>Read and review your facts</small></li><li data-step-marker="2"><span>02</span><b>Choose a role</b><small>Browse your strongest matches</small></li><li data-step-marker="3"><span>03</span><b>Download documents</b><small>Generate your application files</small></li></ol></nav>
+    <nav class="journey" aria-label="CV journey"><ol><li data-step-marker="1"><span>01</span><b>Read your CV</b><small>Confirm the facts it found</small></li><li data-step-marker="2"><span>02</span><b>Choose a template</b><small>See each design before selecting</small></li><li data-step-marker="3"><span>03</span><b>Preview and download</b><small>Optional links to suitable roles</small></li></ol></nav>
 
     <section class="workspace">
       <section class="panel profile-panel step-panel" data-step-panel="1" aria-labelledby="profile-title">
         <div class="panel-head"><div><p class="eyebrow">Candidate record</p><h2 id="profile-title">Make the profile accurate.</h2></div><span class="local-chip">Private browser workspace</span></div>
         <label class="dropzone" for="cv-file"><input id="cv-file" type="file" accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.webp,.heic,.tif,.tiff" hidden><strong>Choose a CV to read</strong><small>PDF, DOCX, TXT, or Markdown · max 8 MB</small></label>
         <p id="upload-note" class="quiet">Nothing has been uploaded yet.</p>
-        <p class="quiet">A language model helps label tricky CV lines and select relevant evidence for the role you choose (TypeSafe, United States). Your CV's text is sent there for those judgements; it cannot add claims, and nothing else leaves this server.</p>
+        <p class="quiet">A language model may help label tricky CV lines (TypeSafe, United States). It cannot add claims, and nothing else leaves this server.</p>
         <form id="profile-form" class="profile-form">
           <label>Name<input name="name" autocomplete="name" placeholder="Your name"></label>
           <label>Professional headline<input name="headline" placeholder="e.g. Quantitative analyst"></label>
           <div class="two-col"><label>Email<input name="email" type="email" autocomplete="email"></label><label>Phone<input name="phone" autocomplete="tel"></label></div>
           <label>Location<input name="location" autocomplete="address-level2" placeholder="e.g. Lagos, Nigeria · open to relocation"></label>
           <label>Verified skills <input name="skills" placeholder="Python, time series, risk modelling"></label>
-          <fieldset class="template-picker"><legend>CV template</legend><p class="quiet">First inspect the same fictional full CV in every real design. Your choice changes presentation only; your approved facts stay the same.</p><input id="cv-template" type="hidden" name="cv_template" value="ats-plain"><button id="open-template-gallery" class="secondary" type="button">View 13 real template samples</button><p id="selected-template-note" class="template-choice">Selected: ATS Plain — recommended for application portals.</p></fieldset>
           <details class="evidence-editor" open><summary>Structured evidence for the actual CV</summary><p>One record per paragraph. First line: <code>Role | Organisation | Dates | Location</code>. Then place each approved achievement on a new line beginning with <code>-</code>. The generator only reorders these exact facts.</p><label>Experience<textarea name="experience_text" rows="10" placeholder="Quantitative Analyst | Acme Capital | 2022 – Present | Lagos, Nigeria&#10;- Built Python research tools for financial time-series analysis.&#10;- Communicated risk-model findings to investment stakeholders."></textarea></label><label>Projects (optional)<textarea name="project_text" rows="6" placeholder="Project name | Context | Year | Link or location&#10;- What you built, using only a fact you can support."></textarea></label><label>Education (optional)<textarea name="education_text" rows="5" placeholder="Degree | Institution | 2018 – 2022 | City, Country&#10;- Thesis, distinction, or other verified detail."></textarea></label><label>Languages (optional)<input name="languages" placeholder="English — fluent, French — professional working proficiency"></label></details>
           <details class="evidence-editor"><summary>Original extracted text (reference only)</summary><p>Kept locally so you can cross-check the structured record. It is not sent to job boards and it is not turned into claims automatically.</p><label>Extracted CV text<textarea name="source_excerpt" rows="7" placeholder="Review the CV text here. Remove anything you do not want stored locally."></textarea></label></details>
-          <button class="secondary" type="submit">Save candidate record</button>
+          <button class="secondary" type="submit">Save changes</button>
           <div class="step-actions">
-            <button id="continue-to-jobs" class="primary" type="submit" disabled>Continue to matched roles</button>
-            <p id="continue-note" class="quiet">Nothing moves on by itself. Read every field, correct anything the reader got wrong, then continue when you are ready.</p>
+            <button id="continue-to-template" class="primary" type="submit" disabled>Choose a CV template</button>
+            <p id="continue-note" class="quiet">Read every field, correct anything the reader got wrong, then choose how your CV should look.</p>
           </div>
         </form>
         <p class="quiet">No sign-in is needed. This browser keeps its own private workspace; keep this browser data if you want to return to your saved CV and documents.</p>
       </section>
 
-      <section class="panel jobs-panel step-panel" data-step-panel="2" aria-labelledby="jobs-title" hidden>
-        <div class="panel-head"><div><p class="eyebrow">Role shortlist</p><h2 id="jobs-title">Choose a role worth tailoring for.</h2></div><span id="jobs-source" class="sample-chip">Waiting for profile</span></div>
-        <p id="jobs-note" class="quiet">Save a candidate record to search current remote roles. If the source is unavailable, the app clearly falls back to demo roles.</p>
-        <div id="jobs" class="job-list"><p class="quiet">Save a candidate record to search current remote roles.</p></div>
-        <div class="step-actions">
-          <button id="continue-to-generate" class="primary" type="button" disabled>Continue with the selected role</button>
-          <p id="role-note" class="quiet">Pick a role from the list, then continue when you are sure. Nothing is generated until you ask for it.</p>
-        </div>
+      <section class="panel output-panel step-panel" data-step-panel="2" aria-labelledby="output-title" hidden>
+        <div class="panel-head"><div><p class="eyebrow">Choose your design</p><h2 id="output-title">See it before you select it.</h2></div><span class="local-chip">13 real samples</span></div>
+        <p class="template-intro">Every sample uses the same fictional full CV. Your selection changes presentation only; the facts and achievements in your CV stay exactly as you approved them.</p>
+        <input id="cv-template" type="hidden" name="cv_template" value="ats-plain" form="profile-form">
+        <div class="selected-template-card"><div><p class="eyebrow">Selected design</p><p id="selected-template-note" class="template-choice">Selected: ATS Plain — recommended for application portals.</p></div><button id="open-template-gallery" class="secondary" type="button">Browse template samples</button></div>
+        <button id="continue-to-preview" class="primary" type="button" disabled>Choose a template to continue</button>
         <button id="back-to-profile" class="secondary step-back" type="button">Back to CV details</button>
       </section>
 
-      <section class="panel output-panel step-panel" data-step-panel="3" aria-labelledby="output-title" hidden>
-        <div class="panel-head"><div><p class="eyebrow">Application package</p><h2 id="output-title">Generate only what you can stand behind.</h2></div><span id="selected-job" class="selected-job">No role selected</span></div>
-        <a id="original-job" class="original-job" href="#" target="_blank" rel="noopener" hidden>Open original vacancy ↗</a>
-        <div class="document-note"><span class="file-icon">PDF<br>DOCX</span><p>The app gives you polished PDFs plus editable Word CV and cover-letter files. The document engine stays behind the scenes.</p></div>
-        <button id="generate" class="primary" disabled>Generate CV and cover letter</button>
-        <div id="documents" class="documents"><p class="quiet">Choose a role, then generate a document package.</p></div>
-        <button id="back-to-jobs" class="secondary step-back" type="button">Choose a different role</button>
+      <section class="panel jobs-panel step-panel" data-step-panel="3" aria-labelledby="jobs-title" hidden>
+        <div class="panel-head"><div><p class="eyebrow">Your CV is ready</p><h2 id="jobs-title">Preview it, then take it with you.</h2></div><span class="local-chip">PDF + DOCX</span></div>
+        <div id="base-documents" class="documents"><p class="quiet">Preparing your CV preview…</p></div>
+        <section class="next-branch"><p class="eyebrow">Optional job links</p><h3>Roles that may fit this CV</h3><p id="jobs-note">These are suggestions based on the current CV. Open the original listing to read it and apply directly.</p><span id="jobs-source" class="sample-chip">Loading roles</span><div id="jobs" class="job-list"><p class="quiet">Finding suitable roles…</p></div></section>
+        <button id="back-to-template" class="secondary step-back" type="button">Choose a different template</button>
       </section>
     </section>
     <dialog id="template-gallery" class="template-gallery" aria-labelledby="template-gallery-title">
